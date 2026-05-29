@@ -65,7 +65,7 @@ Three runnable examples in [`examples/`](examples/) put the pattern to work:
 curl -fsSL https://raw.githubusercontent.com/drogers0/aistat/main/install.sh | sh
 ```
 
-Prebuilt releases ship for **macOS** (arm64, amd64) and **Linux** (amd64, arm64). Windows may work but isn't currently supported. The installer prompts before modifying your shell rc.
+Prebuilt releases ship for **macOS** (arm64, amd64) and **Linux** (amd64, arm64). Windows may work but isn't currently supported.
 
 <details>
 <summary>Other install options</summary>
