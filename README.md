@@ -47,6 +47,8 @@ switched to work@example.com (uuid 1a2b3c4d-…); was personal@example.com
 
 https://github.com/user-attachments/assets/83c6c361-c73f-4ac1-aec4-72d901752b56
 
+<p align="center"><sub><em>Claude spawns a Codex subagent — picked because <code>aistat</code> shows Codex with the most headroom.</em></sub></p>
+
 Three runnable examples in [`examples/`](examples/) put the pattern to work:
 
 - **[`agent-selection.md`](examples/agent-selection.md)** — let your LLM agent manage its own usage quotas, turning your scattered LLM logins into one coordinated budget the agent draws from automatically.
