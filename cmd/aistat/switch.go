@@ -78,7 +78,7 @@ func realSwitchLookupActiveUUID(ctx context.Context, stored []accounts.Account, 
 		}
 		return "", nil // treat any read failure as "no active account"
 	}
-	lookupClient := claude.New(debug, userAgent())
+	lookupClient := claude.New(debug, claude.DefaultUserAgent(resolvedVersion()))
 	return claude.ResolveActiveUUID(claude.ReconcileInput{
 		LiveBlob: &cr,
 		Stored:   stored,
@@ -171,7 +171,7 @@ func runSwitch(args []string, stdout, stderr io.Writer, g globals) int {
 
 	// Create the Claude client upfront — needed in both modes (FetchForSwitch
 	// for auto-pick, ReconcileAndPersist post-write for both modes).
-	client := newSwitchClient(debugW, userAgent(), store)
+	client := newSwitchClient(debugW, claude.DefaultUserAgent(resolvedVersion()), store)
 
 	// Step 4: Pick target account.
 	var target accounts.Account
@@ -237,7 +237,7 @@ func runSwitch(args []string, stdout, stderr io.Writer, g globals) int {
 		// Compare best candidate with active account to check "already on best" (D13).
 		// fetchLiveUsage is read-only: no store mutation regardless of result.
 		if activeAcct := findAccountByUUID(stored, activeUUID); activeAcct != nil {
-			activeLimits, liveErr := fetchLiveUsage(ctx, activeAcct.AccessToken(), activeAcct.UUID, userAgent(), debugW)
+			activeLimits, liveErr := fetchLiveUsage(ctx, activeAcct.AccessToken(), activeAcct.UUID, claude.DefaultUserAgent(resolvedVersion()), debugW)
 			if liveErr == nil {
 				activeAR := providers.AccountResult{Limits: activeLimits}
 				var bestLastSeen time.Time

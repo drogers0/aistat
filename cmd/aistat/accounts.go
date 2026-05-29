@@ -227,7 +227,7 @@ func makeRealActiveUUIDResolver(g globals, stderr io.Writer) func(context.Contex
 	if g.Debug {
 		debugW = stderr
 	}
-	client := claude.New(debugW, userAgent())
+	client := claude.New(debugW, claude.DefaultUserAgent(resolvedVersion()))
 	return func(ctx context.Context, stored []accounts.Account) (string, error) {
 		credCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()

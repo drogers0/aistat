@@ -16,7 +16,7 @@ import (
 	"github.com/drogers0/aistat/v2/internal/providers"
 )
 
-const usageCacheTTLDefault = 30 * time.Second
+const usageCacheTTLDefault = 90 * time.Second
 
 // usageCacheFilename is versioned by suffix; bumping the format means writing
 // a new filename and ignoring older ones. No in-file schema field, no

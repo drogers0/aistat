@@ -1596,3 +1596,13 @@ func TestNew_WithCacheBypass(t *testing.T) {
 		}
 	}
 }
+
+// TestNew_PassesUserAgentToDoer guards against a regression where claude.New
+// drops or alters its userAgent arg. Combined with httpx_test.go's wire-level
+// checks on Doer.UserAgent, this proves DefaultUserAgent reaches the wire.
+func TestNew_PassesUserAgentToDoer(t *testing.T) {
+	c := New(nil, "claude-code/1.2.3")
+	if c.doer.UserAgent != "claude-code/1.2.3" {
+		t.Errorf("doer.UserAgent = %q, want %q", c.doer.UserAgent, "claude-code/1.2.3")
+	}
+}

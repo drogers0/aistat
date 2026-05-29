@@ -40,11 +40,11 @@ func realProviders(serialStderr *httpx.ConcurrencySafeWriter, includeDebug bool,
 		store = accounts.NewMemoryStore()
 	}
 
-	ua := userAgent()
+	v := resolvedVersion()
 	return []providers.Provider{
-		claude.New(debugSink, ua, claude.WithStore(store), claude.WithCacheBypass(cacheBypass)),
-		codex.New(debugSink, ua),
-		copilot.New(debugSink, ua, copilot.WithWarn(wrapWarn(serialStderr))),
+		claude.New(debugSink, claude.DefaultUserAgent(v), claude.WithStore(store), claude.WithCacheBypass(cacheBypass)),
+		codex.New(debugSink, codex.DefaultUserAgent(v)),
+		copilot.New(debugSink, copilot.DefaultUserAgent(v), copilot.WithWarn(wrapWarn(serialStderr))),
 	}
 }
 

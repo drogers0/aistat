@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/drogers0/aistat/v2/internal/orchestrate"
-	"github.com/drogers0/aistat/v2/internal/providers"
 )
 
 // version is the goreleaser-injected build tag (via `-ldflags "-X main.version=..."`);
@@ -28,15 +27,11 @@ func resolvedVersion() string {
 	return "dev"
 }
 
-func userAgent() string {
-	return fmt.Sprintf("aistat/%s (+%s)", resolvedVersion(), providers.ProjectURL)
-}
-
 var helpText = buildHelpText()
 
 func buildHelpText() string {
 	var sb strings.Builder
-	sb.WriteString("aistat — report and manage Claude / Codex / Copilot usage\n\nUsage:\n  aistat [global flags] [subcommand] [args]\n\nSubcommands:\n  usage [provider]      Report usage for all providers (default), or one: claude, codex, copilot\n  switch [--to <id>]    Switch the live Claude account (auto-picks most headroom by default)\n  accounts list         List stored Claude accounts\n  accounts remove <id>  Remove a stored Claude account (by email or uuid)\n\nGlobal flags:\n  -h, --human    Render human-readable text instead of JSON (affects `usage` only)\n      --debug    Write per-request and per-provider lines to stderr\n      --version  Print version and exit\n      --help     Print this help and exit\n\nusage flags:\n  --refresh      Bypass the 30s per-account cache and force a fresh read;\n                 writes through so the next invocation still benefits.\n\nExit codes:\n  0  All requested providers succeeded.\n  1  One or more requested providers failed at runtime.\n  2  Usage error (unknown subcommand, malformed flags).\n  3  Stdout write error (broken pipe, disk full).\n")
+	sb.WriteString("aistat — report and manage Claude / Codex / Copilot usage\n\nUsage:\n  aistat [global flags] [subcommand] [args]\n\nSubcommands:\n  usage [provider]      Report usage for all providers (default), or one: claude, codex, copilot\n  switch [--to <id>]    Switch the live Claude account (auto-picks most headroom by default)\n  accounts list         List stored Claude accounts\n  accounts remove <id>  Remove a stored Claude account (by email or uuid)\n\nGlobal flags:\n  -h, --human    Render human-readable text instead of JSON (affects `usage` only)\n      --debug    Write per-request and per-provider lines to stderr\n      --version  Print version and exit\n      --help     Print this help and exit\n\nusage flags:\n  --refresh      Bypass the per-account usage cache (~90s TTL) and force a fresh read;\n                 writes through so the next invocation still benefits.\n\nExit codes:\n  0  All requested providers succeeded.\n  1  One or more requested providers failed at runtime.\n  2  Usage error (unknown subcommand, malformed flags).\n  3  Stdout write error (broken pipe, disk full).\n")
 	return sb.String()
 }
 
