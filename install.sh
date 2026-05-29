@@ -14,13 +14,22 @@ set -eu
 REPO="drogers0/aistat"
 PREFIX=""
 prefix_explicit=0
+modify_path=auto   # auto | yes | no
+assume_yes=0
 
 usage() {
   cat <<'EOF'
 aistat installer
 
 Usage:
-  install.sh [--prefix=DIR]
+  install.sh [--prefix=DIR] [--no-modify-path] [-y|--yes]
+
+Options:
+  --prefix=DIR         install directory (default: /usr/local/bin if writable,
+                       else $HOME/.local/bin)
+  --no-modify-path     don't offer to append a PATH export to your shell rc
+  --modify-path        force the PATH export (skip the consent prompt)
+  -y, --yes            assume "yes" to the consent prompt (same as --modify-path)
 
 Environment:
   AISTAT_VERSION=vX.Y.Z   pin a specific release tag (default: latest)
@@ -29,10 +38,13 @@ EOF
 
 for arg in "$@"; do
   case "$arg" in
-    --prefix=?*) PREFIX="${arg#--prefix=}"; prefix_explicit=1 ;;
-    --prefix=)   echo "aistat-install: --prefix requires a value" >&2; exit 2 ;;
-    -h|--help)   usage; exit 0 ;;
-    *)           echo "aistat-install: unknown argument: $arg" >&2; exit 2 ;;
+    --prefix=?*)       PREFIX="${arg#--prefix=}"; prefix_explicit=1 ;;
+    --prefix=)         echo "aistat-install: --prefix requires a value" >&2; exit 2 ;;
+    --no-modify-path)  modify_path=no ;;
+    --modify-path)     modify_path=yes ;;
+    -y|--yes)          assume_yes=1 ;;
+    -h|--help)         usage; exit 0 ;;
+    *)                 echo "aistat-install: unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
 
@@ -156,34 +168,107 @@ fi
 echo ""
 echo "${bold}✓ installed aistat $installed_version → $dest${reset}"
 
-# Detect whether PREFIX is on PATH for follow-up advice.
+# Is PREFIX already on PATH?
 on_path=0
 case ":$PATH:" in
   *":$PREFIX:"*) on_path=1 ;;
 esac
 
-if [ "$on_path" -eq 0 ]; then
-  case "${SHELL:-}" in
-    */zsh)  rc="$HOME/.zshrc";  add="export PATH=\"$PREFIX:\$PATH\"" ;;
-    */bash) rc="$HOME/.bashrc"; add="export PATH=\"$PREFIX:\$PATH\"" ;;
-    */fish) rc="$HOME/.config/fish/config.fish"; add="fish_add_path $PREFIX" ;;
-    *)      rc="$HOME/.profile"; add="export PATH=\"$PREFIX:\$PATH\"" ;;
-  esac
+# Pick the rc file and the line we'd add for the current shell.
+case "${SHELL:-}" in
+  */zsh)
+    rc="$HOME/.zshrc"
+    add="export PATH=\"$PREFIX:\$PATH\""
+    ;;
+  */bash)
+    # macOS bash login shells source ~/.bash_profile; Linux uses ~/.bashrc.
+    if [ "$os" = "darwin" ]; then rc="$HOME/.bash_profile"; else rc="$HOME/.bashrc"; fi
+    add="export PATH=\"$PREFIX:\$PATH\""
+    ;;
+  */fish)
+    rc="$HOME/.config/fish/config.fish"
+    add="fish_add_path $PREFIX"
+    ;;
+  *)
+    rc="$HOME/.profile"
+    add="export PATH=\"$PREFIX:\$PATH\""
+    ;;
+esac
+
+sentinel="# Added by aistat-install (https://github.com/drogers0/aistat)"
+
+# Was an earlier run's edit (sentinel) or any reference to PREFIX already written?
+already_added=0
+if [ -f "$rc" ] && { grep -Fq "$sentinel" "$rc" 2>/dev/null || grep -Fq "$PREFIX" "$rc" 2>/dev/null; }; then
+  already_added=1
+fi
+
+if [ "$on_path" -eq 1 ]; then
   echo ""
-  echo "  ${bold}$PREFIX is not on your PATH yet.${reset} To fix:"
+  echo "  Try it: ${bold}aistat -h${reset}"
+elif [ "$already_added" -eq 1 ]; then
+  echo ""
+  echo "  $PREFIX is already referenced in $rc but isn't active in this shell yet."
+  echo "  Run: ${bold}. $rc${reset} (or open a new terminal), then: ${bold}aistat -h${reset}"
+elif [ "$modify_path" = "no" ]; then
+  echo ""
+  echo "  $PREFIX is not on your PATH yet. To fix:"
   echo ""
   echo "    echo '$add' >> $rc && . $rc"
   echo ""
   echo "  Then verify: ${bold}aistat -h${reset}"
-elif [ "$fell_back" -eq 0 ]; then
+else
+  # Offer to append the line. Ask via /dev/tty so the curl-pipe doesn't block us.
   echo ""
-  echo "  Try it: ${bold}aistat -h${reset}"
-fi
+  echo "  $PREFIX is not on your PATH. The installer can append to ${bold}$rc${reset}:"
+  echo ""
+  echo "    $sentinel"
+  echo "    $add"
+  echo ""
 
-if [ "$fell_back" -eq 1 ]; then
-  echo ""
-  echo "  (Wanted /usr/local/bin instead? Re-run with ${bold}| sudo sh${reset} — sudo"
-  echo "   has to be on the ${bold}sh${reset} side of the pipe, not the curl side.)"
+  proceed=0
+  if [ "$modify_path" = "yes" ] || [ "$assume_yes" -eq 1 ]; then
+    proceed=1
+  elif ( exec </dev/tty >/dev/tty ) 2>/dev/null; then
+    # Controlling tty is actually openable (not just present as a file node).
+    printf "  Proceed? [Y/n] " > /dev/tty
+    read -r ans < /dev/tty || ans=""
+    case "$ans" in
+      ""|y|Y|yes|YES) proceed=1 ;;
+      *) proceed=0 ;;
+    esac
+  else
+    # Non-interactive (CI, no controlling tty): default to yes, matching rustup/bun.
+    echo "  (non-interactive shell — proceeding by default; pass --no-modify-path to skip)"
+    proceed=1
+  fi
+
+  if [ "$proceed" -eq 1 ]; then
+    if [ ! -e "$rc" ]; then
+      mkdir -p "$(dirname "$rc")" 2>/dev/null || true
+      : > "$rc" 2>/dev/null || true
+    fi
+    if { printf "\n%s\n%s\n" "$sentinel" "$add" >> "$rc"; } 2>/dev/null; then
+      echo ""
+      echo "  ${bold}Added to $rc.${reset} Activate it now:"
+      echo ""
+      echo "    ${bold}. $rc${reset}"
+      echo ""
+      echo "  Then verify: ${bold}aistat -h${reset}"
+    else
+      echo ""
+      echo "  ${bold}Could not write to $rc.${reset} Add it manually:"
+      echo ""
+      echo "    echo '$add' >> $rc && . $rc"
+      echo ""
+      echo "  Then verify: ${bold}aistat -h${reset}"
+    fi
+  else
+    echo ""
+    echo "  Skipped. To add it yourself later:"
+    echo ""
+    echo "    echo '$add' >> $rc && . $rc"
+  fi
 fi
 
 echo ""

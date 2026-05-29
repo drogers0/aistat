@@ -1,4 +1,6 @@
-<h1 align="center">aistat</h1>
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/88121e24-4f65-4976-8c60-a9e379f339bc" alt="aistat banner" width="640">
+</p>
 
 <p align="center">
   <em>Usage limits and instant account switching for Claude, Codex, and Copilot — from one terminal command, turning scattered LLM logins into one coordinated budget.</em>
@@ -63,7 +65,7 @@ Three runnable examples in [`examples/`](examples/) put the pattern to work:
 curl -fsSL https://raw.githubusercontent.com/drogers0/aistat/main/install.sh | sh
 ```
 
-Prebuilt releases ship for **macOS** (arm64, amd64) and **Linux** (amd64, arm64). Windows may work but isn't currently supported.
+Prebuilt releases ship for **macOS** (arm64, amd64) and **Linux** (amd64, arm64). The installer drops the binary in `/usr/local/bin` when it's writable, otherwise `~/.local/bin`. If the target isn't on your `PATH`, the script shows you the exact line it would add to your shell rc (`~/.zshrc`, `~/.bashrc`, etc.) and asks before writing — answer `Y` and you're done; answer `n` and it prints the copy-pasteable command instead.
 
 <details>
 <summary>Other install options</summary>
@@ -79,6 +81,14 @@ AISTAT_VERSION=v2.1.0 curl -fsSL https://raw.githubusercontent.com/drogers0/aist
 ```bash
 curl -fsSL https://raw.githubusercontent.com/drogers0/aistat/main/install.sh | sh -s -- --prefix=$HOME/bin
 ```
+
+**Skip the PATH-edit prompt entirely** (the installer won't touch your shell rc):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/drogers0/aistat/main/install.sh | sh -s -- --no-modify-path
+```
+
+**Non-interactive (CI):** without a controlling terminal the installer assumes "yes" on the PATH-edit prompt — matching rustup/bun/uv behavior. Pass `--no-modify-path` to opt out, or `-y` to skip the prompt in an interactive shell too.
 
 **`go install` (requires Go 1.22+):**
 
