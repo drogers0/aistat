@@ -45,9 +45,7 @@ switched to work@example.com (uuid 1a2b3c4d-…); was personal@example.com
 
 `aistat` is built for **usage-aware agent routing**: pick which provider to spawn the next subtask on by which one will waste capacity if you don't use it, rather than by which one is your default. The JSON output is the routing primitive — orchestrators read it, score the candidates, and dispatch.
 
-<p align="center">
-  <video src="https://github.com/user-attachments/assets/2df176fa-80f9-452e-8ffb-3edc3b40e76b" controls width="720"></video>
-</p>
+https://github.com/user-attachments/assets/83c6c361-c73f-4ac1-aec4-72d901752b56
 
 Three runnable examples in [`examples/`](examples/) put the pattern to work:
 
