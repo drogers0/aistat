@@ -177,11 +177,14 @@ func runAccountsRemove(
 	target := matches[0]
 
 	// D11: active-protection — resolve the active UUID read-only, no store mutation.
+	// Fail closed on resolver error: ResolveActiveUUID already normalizes benign
+	// "active is unknowable" cases (no live blob, 401/403, missing fields) to
+	// ("", nil), so a non-nil error is a transient/actionable failure where
+	// proceeding would risk deleting the active account.
 	activeUUID, resolveErr := resolveActiveUUID(ctx, stored)
 	if resolveErr != nil {
-		// Non-fatal: if we can't determine the active account, proceed with deletion.
-		// This is the conservative choice: the user explicitly asked to remove.
-		_ = resolveErr
+		fmt.Fprintf(stderr, "aistat: claude: could not verify active account: %s (retry, or use `claude /logout` first if you want to remove the active account)\n", resolveErr)
+		return int(orchestrate.StatusUsageError)
 	}
 	if activeUUID != "" && activeUUID == target.UUID {
 		fmt.Fprintln(stderr, "cannot remove currently active account \u2014 use 'claude /logout' first")

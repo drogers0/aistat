@@ -225,6 +225,31 @@ func TestAccountsRemove_ActiveProtection(t *testing.T) {
 	}
 }
 
+func TestAccountsRemove_ResolverErrorFailsClosed(t *testing.T) {
+	ms := accounts.NewMemoryStore()
+	uuid := "ffff-7777"
+	seedAccount(t, ms, uuid, "target@example.com", "plan", time.Now())
+
+	errResolver := func(_ context.Context, _ []accounts.Account) (string, error) {
+		return "", errors.New("profile lookup timed out")
+	}
+	r := runAccountsTest(ms, errResolver, "remove", "target@example.com")
+	if r.code != 2 {
+		t.Fatalf("expected exit 2, got %d (stderr %q)", r.code, r.stderr)
+	}
+	if !strings.Contains(r.stderr, "could not verify active account") {
+		t.Fatalf("missing fail-closed message; stderr: %s", r.stderr)
+	}
+	if !strings.Contains(r.stderr, "profile lookup timed out") {
+		t.Fatalf("expected wrapped resolver error; stderr: %s", r.stderr)
+	}
+	// Account must still be present.
+	listed, _ := ms.List(context.Background())
+	if len(listed) != 1 {
+		t.Fatalf("store should still have 1 account after blocked remove; got %d", len(listed))
+	}
+}
+
 // --- accounts remove: happy path ---
 
 func TestAccountsRemove_HappyPath(t *testing.T) {

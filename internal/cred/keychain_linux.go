@@ -91,6 +91,13 @@ func WriteClaudeLiveBlob(ctx context.Context, rawBlob []byte) error {
 		tmp.Close()
 		return fmt.Errorf("writing credential file: %w", err)
 	}
+	// Sync before close so a crash between rename and the next fsync cannot leave
+	// the live credential half-written. Matches the atomic-write pattern in
+	// internal/accounts/store_linux.go and internal/providers/claude/usagecache.go.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("syncing credential file: %w", err)
+	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("closing credential file: %w", err)
 	}
