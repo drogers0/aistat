@@ -112,6 +112,7 @@ tar -xzf "$tmp/$archive" -C "$tmp" aistat || err "extracting aistat from $archiv
 chmod +x "$tmp/aistat"
 
 # --- pick / validate prefix ---
+fell_back=0
 if [ "$prefix_explicit" -eq 1 ]; then
   mkdir -p "$PREFIX" || err "could not create --prefix directory: $PREFIX"
 else
@@ -121,7 +122,7 @@ else
     : "${HOME:?HOME not set; re-run with --prefix=DIR}"
     PREFIX="$HOME/.local/bin"
     mkdir -p "$PREFIX"
-    echo "aistat-install: /usr/local/bin not writable; installing to $PREFIX"
+    fell_back=1
   fi
 fi
 
@@ -141,11 +142,48 @@ if [ "$os" = "darwin" ] && command -v xattr >/dev/null 2>&1; then
   xattr -d com.apple.quarantine "$dest" 2>/dev/null || true
 fi
 
-# --- PATH heads-up after the install destination is final ---
+# --- final summary: success line first, then any follow-up actions ---
+installed_version=$("$dest" --version 2>/dev/null | head -n1 || echo "$ver")
+
+if [ -t 1 ]; then
+  bold=$(printf '\033[1m')
+  reset=$(printf '\033[0m')
+else
+  bold=""
+  reset=""
+fi
+
+echo ""
+echo "${bold}✓ installed aistat $installed_version → $dest${reset}"
+
+# Detect whether PREFIX is on PATH for follow-up advice.
+on_path=0
 case ":$PATH:" in
-  *":$PREFIX:"*) ;;
-  *) echo "aistat-install: note — $PREFIX is not on your PATH; add it to your shell rc." ;;
+  *":$PREFIX:"*) on_path=1 ;;
 esac
 
-installed_version=$("$dest" --version 2>/dev/null | head -n1 || echo "$ver")
-echo "aistat-install: installed aistat $installed_version to $dest"
+if [ "$on_path" -eq 0 ]; then
+  case "${SHELL:-}" in
+    */zsh)  rc="$HOME/.zshrc";  add="export PATH=\"$PREFIX:\$PATH\"" ;;
+    */bash) rc="$HOME/.bashrc"; add="export PATH=\"$PREFIX:\$PATH\"" ;;
+    */fish) rc="$HOME/.config/fish/config.fish"; add="fish_add_path $PREFIX" ;;
+    *)      rc="$HOME/.profile"; add="export PATH=\"$PREFIX:\$PATH\"" ;;
+  esac
+  echo ""
+  echo "  ${bold}$PREFIX is not on your PATH yet.${reset} To fix:"
+  echo ""
+  echo "    echo '$add' >> $rc && . $rc"
+  echo ""
+  echo "  Then verify: ${bold}aistat -h${reset}"
+elif [ "$fell_back" -eq 0 ]; then
+  echo ""
+  echo "  Try it: ${bold}aistat -h${reset}"
+fi
+
+if [ "$fell_back" -eq 1 ]; then
+  echo ""
+  echo "  (Wanted /usr/local/bin instead? Re-run with ${bold}| sudo sh${reset} — sudo"
+  echo "   has to be on the ${bold}sh${reset} side of the pipe, not the curl side.)"
+fi
+
+echo ""
