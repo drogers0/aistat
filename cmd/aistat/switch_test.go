@@ -20,6 +20,7 @@ type stubSwitchClient struct {
 	fetchResults       []providers.AccountResult
 	fetchErr           error
 	reconcileCalled    bool
+	reconcileFn        func(context.Context) error // optional; runs (in addition to setting reconcileCalled) e.g. to mutate a backing store
 	postSwitchVerifyFn func(context.Context, accounts.Account) error
 }
 
@@ -27,8 +28,11 @@ func (s *stubSwitchClient) FetchForSwitch(_ context.Context) ([]providers.Accoun
 	return s.fetchResults, s.fetchErr
 }
 
-func (s *stubSwitchClient) ReconcileAndPersist(_ context.Context) error {
+func (s *stubSwitchClient) ReconcileAndPersist(ctx context.Context) error {
 	s.reconcileCalled = true
+	if s.reconcileFn != nil {
+		return s.reconcileFn(ctx)
+	}
 	return nil
 }
 

@@ -436,6 +436,15 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, opts swi
 		}
 
 		if opts.ifNeeded {
+			// The active account's stored blob goes stale between polls — the
+			// upstream CLI refreshes the live credential in place and only
+			// `usage`'s reconcile syncs it back. Reconcile here (best effort)
+			// and re-read the store so storedAccess below carries the current
+			// token instead of 401-looping until someone runs `aistat usage`.
+			_ = h.client.ReconcileAndPersist(ctx)
+			if refreshed, err := h.store.List(ctx); err == nil {
+				stored = refreshed
+			}
 			activeAcct := findAccountByUUID(stored, activeUUID)
 			if activeAcct == nil {
 				fmt.Fprintf(stderr, "aistat: %s: cannot determine the active account; skipping conditional switch\n", h.id)

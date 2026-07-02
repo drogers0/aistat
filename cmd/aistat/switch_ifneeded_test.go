@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/drogers0/aistat/v2/internal/accounts"
 	"github.com/drogers0/aistat/v2/internal/autoswitch"
 	"github.com/drogers0/aistat/v2/internal/providers"
+	"github.com/drogers0/aistat/v2/internal/providers/claude"
 	"github.com/drogers0/aistat/v2/internal/testutil"
 )
 
@@ -135,6 +137,9 @@ func TestSwitchIfNeeded(t *testing.T) {
 			clearThresholdEnv(t)
 			withEnvFilePath(t, filepath.Join(t.TempDir(), "absent.env"))
 			seedTwoAccounts(t)
+			// The gate reconciles unconditionally before the fetch below; stub the
+			// client so this doesn't touch the real Claude Keychain credential.
+			withSwitchClient(t, &stubSwitchClient{})
 			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
 				return makeLimitsFull(map[string]float64{"five_hour": 58, "seven_day": 50}), nil
 			})
@@ -148,6 +153,73 @@ func TestSwitchIfNeeded(t *testing.T) {
 			}
 			if len(*notes) != 0 {
 				t.Errorf("unexpected notifications: %v", *notes)
+			}
+		}},
+		{"gate reconciles before reading the store", func(t *testing.T) {
+			// The active account's stored token goes stale between polls (Claude
+			// Code refreshes the live credential in place; only `aistat usage`'s
+			// reconcile syncs the store copy back). The --if-needed gate must
+			// reconcile before it fetches the active account's usage, or a stale
+			// stored token 401-loops forever. Order proof: the fetch closure below
+			// asserts reconcileCalled is already true by the time it runs.
+			clearThresholdEnv(t)
+			withEnvFilePath(t, filepath.Join(t.TempDir(), "absent.env"))
+			seedTwoAccounts(t)
+			stub := &stubSwitchClient{}
+			withSwitchClient(t, stub)
+			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
+				if !stub.reconcileCalled {
+					t.Error("gate fetched active-account usage before reconciling — stale stored token would 401-loop")
+				}
+				return makeLimitsFull(map[string]float64{"five_hour": 58, "seven_day": 50}), nil
+			})
+			r := runSwitchTest("claude", "--if-needed")
+			wantExit(t, r, 0)
+			wantOut(t, r, "no switch needed")
+		}},
+		{"gate sees a store blob updated by reconcile", func(t *testing.T) {
+			// Reconcile alone is not enough — the gate must also re-read the store
+			// afterward, otherwise it keeps using the pre-reconcile in-memory
+			// `stored` slice. The stub's ReconcileAndPersist mutates the memory
+			// store's uuid-work account with a distinguishable RawBlob; the fetch
+			// closure asserts it saw the post-reconcile token, not the seeded one.
+			clearThresholdEnv(t)
+			withEnvFilePath(t, filepath.Join(t.TempDir(), "absent.env"))
+			ms := withMemoryStore(t)
+			now := time.Now()
+			seedAccount(t, ms, "uuid-work", "work@example.com", "default_claude_max_20x", now.Add(-2*time.Hour))
+			seedAccount(t, ms, "uuid-personal", "personal@example.com", "default_claude_max_5x", now.Add(-1*time.Hour))
+			withSwitchActiveUUID(t, "uuid-work")
+
+			preToken := claude.StoredAccessToken(getAccountFromStore(t, ms, "uuid-work"))
+
+			stub := &stubSwitchClient{
+				reconcileFn: func(ctx context.Context) error {
+					orig := getAccountFromStore(t, ms, "uuid-work")
+					rawBlob, _ := json.Marshal(map[string]any{
+						"claudeAiOauth": map[string]any{"accessToken": "fresh-token"},
+					})
+					updated, err := accounts.NewAccount(rawBlob, orig.UUID, orig.Email, orig.DisplayName, orig.RateLimitTier, orig.LastSeenAt)
+					if err != nil {
+						return err
+					}
+					return ms.Upsert(ctx, updated)
+				},
+			}
+			withSwitchClient(t, stub)
+
+			var seenToken string
+			withFetchLiveUsageFn(t, func(token string) (map[string]providers.Limit, error) {
+				seenToken = token
+				return makeLimitsFull(map[string]float64{"five_hour": 58, "seven_day": 50}), nil
+			})
+
+			r := runSwitchTest("claude", "--if-needed")
+			wantExit(t, r, 0)
+			wantOut(t, r, "no switch needed")
+			if seenToken != "fresh-token" {
+				t.Errorf("gate fetched with token %q (pre-reconcile was %q), want post-reconcile token %q — store was not re-read after reconcile",
+					seenToken, preToken, "fresh-token")
 			}
 		}},
 		{"5h over threshold switches and notifies", func(t *testing.T) {
@@ -224,6 +296,8 @@ func TestSwitchIfNeeded(t *testing.T) {
 			seedAccount(t, ms, "uuid-work", "work@example.com", "default_claude_max_20x", now)
 			seedAccount(t, ms, "uuid-personal", "personal@example.com", "default_claude_max_5x", now)
 			withSwitchActiveUUID(t, "")
+			// Stub so the unconditional reconcile doesn't touch the real Claude client.
+			withSwitchClient(t, &stubSwitchClient{})
 			written, _ := withWriteBlob(t)
 			r := runSwitchTest("claude", "--if-needed")
 			wantExit(t, r, 1)
@@ -236,6 +310,8 @@ func TestSwitchIfNeeded(t *testing.T) {
 			clearThresholdEnv(t)
 			withEnvFilePath(t, filepath.Join(t.TempDir(), "absent.env"))
 			seedTwoAccounts(t)
+			// Stub so the unconditional reconcile doesn't touch the real Claude client.
+			withSwitchClient(t, &stubSwitchClient{})
 			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
 				return nil, errors.New("boom")
 			})
@@ -294,6 +370,8 @@ func TestSwitchIfNeeded(t *testing.T) {
 			withEnvFilePath(t, filepath.Join(t.TempDir(), "absent.env"))
 			t.Setenv(autoswitch.EnvFiveHour, "off")
 			seedTwoAccounts(t)
+			// Stub so the unconditional reconcile doesn't touch the real Claude client.
+			withSwitchClient(t, &stubSwitchClient{})
 			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
 				return makeLimitsFull(map[string]float64{"five_hour": 1, "seven_day": 50}), nil
 			})
@@ -306,6 +384,8 @@ func TestSwitchIfNeeded(t *testing.T) {
 			withEnvFilePath(t, filepath.Join(t.TempDir(), "absent.env"))
 			seedTwoAccounts(t)
 			withCodexMemoryStore(t)
+			// Stub so the unconditional reconcile doesn't touch the real Claude client.
+			withSwitchClient(t, &stubSwitchClient{})
 			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
 				return makeLimitsFull(map[string]float64{"five_hour": 58, "seven_day": 50}), nil
 			})
@@ -327,6 +407,12 @@ func TestSwitchIfNeeded(t *testing.T) {
 			ms := withMemoryStore(t)
 			seedAccount(t, ms, "uuid-work", "work@example.com", "default_claude_max_20x", time.Now())
 			withSwitchActiveUUID(t, "uuid-work")
+			// The gate now reconciles unconditionally before resolving the active
+			// account, so this must be stubbed like its siblings — otherwise it
+			// would exercise the real Claude client (real keychain read) and, on a
+			// machine with a real Claude Code login, could grow `stored` past one
+			// account and change this test's outcome.
+			withSwitchClient(t, &stubSwitchClient{})
 			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
 				return makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50}), nil
 			})
