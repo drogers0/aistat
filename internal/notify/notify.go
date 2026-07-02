@@ -4,7 +4,9 @@
 package notify
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -14,9 +16,17 @@ import (
 // non-darwin branches without build tags.
 var goos = runtime.GOOS
 
-// runOsascript is the command-runner seam; tests replace it.
+// runOsascript is the command-runner seam; tests replace it. The default
+// surfaces osascript's stderr in the error so TCC / notification-permission
+// denials under launchd are diagnosable from the log.
 var runOsascript = func(ctx context.Context, script string) error {
-	return exec.CommandContext(ctx, "osascript", "-e", script).Run()
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%w: %s", err, bytes.TrimSpace(stderr.Bytes()))
+	}
+	return nil
 }
 
 // Send displays a desktop notification with the given title and message.

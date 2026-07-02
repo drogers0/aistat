@@ -33,6 +33,8 @@ func TestSend(t *testing.T) {
 			nil, `display notification "switched to b@x.com" with title "Claude"`, false},
 		{"escapes quotes and backslashes", "darwin", `T"t`, `m\"x`,
 			nil, `display notification "m\\\"x" with title "T\"t"`, false},
+		{"empty title and message still sends", "darwin", "", "",
+			nil, `display notification "" with title ""`, false},
 		{"non-darwin is a no-op", "linux", "Claude", "hi", nil, "", false},
 		{"osascript error propagates", "darwin", "Claude", "hi", errors.New("boom"), `display notification "hi" with title "Claude"`, true},
 	}
