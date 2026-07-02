@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/drogers0/aistat/v2/internal/accounts"
+	"github.com/drogers0/aistat/v2/internal/autoswitch"
 	"github.com/drogers0/aistat/v2/internal/cred"
 	"github.com/drogers0/aistat/v2/internal/orchestrate"
 	"github.com/drogers0/aistat/v2/internal/providers"
@@ -279,6 +280,9 @@ func runSwitch(args []string, stdout, stderr io.Writer, g globals) int {
 	fs.SetOutput(io.Discard)
 	var toArg string
 	fs.StringVar(&toArg, "to", "", "")
+	var ifNeeded, notifyFlag bool
+	fs.BoolVar(&ifNeeded, "if-needed", false, "")
+	fs.BoolVar(&notifyFlag, "notify", false, "")
 	registerGlobalFlags(fs, &g)
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(stderr, err.Error())
@@ -314,6 +318,32 @@ func runSwitch(args []string, stdout, stderr io.Writer, g globals) int {
 		return int(orchestrate.StatusUsageError)
 	}
 
+	// --if-needed and --to are mutually exclusive modes.
+	if ifNeeded && toArg != "" {
+		fmt.Fprintln(stderr, "--if-needed cannot be combined with --to")
+		return int(orchestrate.StatusUsageError)
+	}
+
+	// Resolve thresholds once, before any provider work (fail fast on bad config).
+	opts := switchOpts{ifNeeded: ifNeeded, notify: notifyFlag}
+	if ifNeeded {
+		envPath, err := autoswitchEnvPath()
+		if err != nil {
+			fmt.Fprintf(stderr, "aistat: %s\n", err)
+			return int(orchestrate.StatusUsageError)
+		}
+		fileVals, err := autoswitch.ReadEnvFile(envPath)
+		if err != nil {
+			fmt.Fprintf(stderr, "aistat: %s\n", err)
+			return int(orchestrate.StatusUsageError)
+		}
+		opts.th, err = autoswitch.Resolve(os.Getenv, fileVals)
+		if err != nil {
+			fmt.Fprintf(stderr, "aistat: %s\n", err)
+			return int(orchestrate.StatusUsageError)
+		}
+	}
+
 	// 3. Setup: context, debug writer.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -332,16 +362,16 @@ func runSwitch(args []string, stdout, stderr io.Writer, g globals) int {
 	// 5. Route.
 	if providerArg != "" {
 		h := handleByID(handles, providerArg)
-		return runSwitchSingle(ctx, h, toArg, stdout, stderr, debugW)
+		return runSwitchSingle(ctx, h, toArg, opts, stdout, stderr, debugW)
 	} else if toArg != "" {
-		return runSwitchInferProvider(ctx, handles, toArg, stdout, stderr, debugW)
+		return runSwitchInferProvider(ctx, handles, toArg, opts, stdout, stderr, debugW)
 	}
-	return runSwitchBulk(ctx, handles, stdout, stderr, debugW)
+	return runSwitchBulk(ctx, handles, opts, stdout, stderr, debugW)
 }
 
 // runSwitchSingle performs a switch for a single provider handle.
 // It contains the existing pick-target → write → reconcile logic.
-func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, stdout, stderr, debugW io.Writer) int {
+func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, opts switchOpts, stdout, stderr, debugW io.Writer) int {
 	stored, err := h.store.List(ctx)
 	if err != nil {
 		fmt.Fprintf(stderr, "aistat: %s: could not list accounts: %s\n", h.id, err)
@@ -353,6 +383,12 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, stdout, 
 	if activeAcct := findAccountByUUID(stored, activeUUID); activeAcct != nil {
 		prevEmail = activeAcct.Email
 	}
+
+	// condReason is non-empty iff --if-needed evaluated and triggered;
+	// condActiveLimits caches the active account's usage from the gate so the
+	// already-on-best comparison does not refetch.
+	var condReason string
+	var condActiveLimits map[string]providers.Limit
 
 	var target accounts.Account
 
@@ -380,7 +416,31 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, stdout, 
 			fmt.Fprintf(stderr, "no accounts stored; %s\n", h.loginHint)
 			return int(orchestrate.StatusUsageError)
 		}
+
+		if opts.ifNeeded {
+			activeAcct := findAccountByUUID(stored, activeUUID)
+			if activeAcct == nil {
+				fmt.Fprintf(stderr, "aistat: %s: cannot determine the active account; skipping conditional switch\n", h.id)
+				return int(orchestrate.StatusAnyFailed)
+			}
+			limits, err := h.fetchLiveUsage(ctx, h.storedAccess(*activeAcct), activeAcct.UUID, h.ua, debugW)
+			if err != nil {
+				fmt.Fprintf(stderr, "aistat: %s: usage fetch for active account failed: %s\n", h.id, err)
+				return int(orchestrate.StatusAnyFailed)
+			}
+			reason, triggered := triggerReason(limits, opts.th)
+			if !triggered {
+				fmt.Fprintf(stdout, "no switch needed (%s)\n", usageSummary(limits))
+				return 0
+			}
+			condReason = reason
+			condActiveLimits = limits
+		}
+
 		if len(stored) == 1 && stored[0].UUID == activeUUID {
+			if opts.notify && condReason != "" {
+				notifyBestEffort(ctx, h.id, condReason+", no better account available", stderr)
+			}
 			fmt.Fprintf(stderr, "only one account stored; nothing to switch to (%s)\n", h.loginHint)
 			return int(orchestrate.StatusUsageError)
 		}
@@ -409,11 +469,19 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, stdout, 
 		}
 
 		// Compare best candidate with active account ("already on best" check).
-		// fetchLiveUsage is read-only: no store mutation.
+		// fetchLiveUsage is read-only: no store mutation. The --if-needed gate
+		// above already fetched this when it triggered — reuse it instead of
+		// fetching twice.
 		if activeAcct := findAccountByUUID(stored, activeUUID); activeAcct != nil {
-			activeLimits, liveErr := h.fetchLiveUsage(ctx, h.storedAccess(*activeAcct), activeAcct.UUID, h.ua, debugW)
+			activeLimits, liveErr := condActiveLimits, error(nil)
+			if activeLimits == nil {
+				activeLimits, liveErr = h.fetchLiveUsage(ctx, h.storedAccess(*activeAcct), activeAcct.UUID, h.ua, debugW)
+			}
 			if liveErr == nil {
 				if !bestScore.better(scoreAccount(activeLimits, activeAcct.LastSeenAt)) {
+					if opts.notify && condReason != "" {
+						notifyBestEffort(ctx, h.id, condReason+", no better account available", stderr)
+					}
 					fmt.Fprintf(stdout, "already on best account (%s)\n", prevEmail)
 					return 0
 				}
@@ -439,6 +507,13 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, stdout, 
 	_ = h.client.ReconcileAndPersist(ctx)
 
 	fmt.Fprintf(stdout, "switched to %s (uuid %s); was %s\n", target.Email, target.UUID, prevEmail)
+	if opts.notify {
+		msg := "switched to " + target.Email
+		if condReason != "" {
+			msg += " (" + condReason + ")"
+		}
+		notifyBestEffort(ctx, h.id, msg, stderr)
+	}
 	if err := h.client.PostSwitchVerify(ctx, target); err != nil {
 		if errors.Is(err, providers.ErrAuthDenied) {
 			fmt.Fprintf(stderr, "aistat: %s: switched-to account's tokens are not usable: %s\n", h.id, err)
@@ -449,7 +524,7 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, stdout, 
 }
 
 // runSwitchBulk fans out switch across all providers with ≥2 stored accounts.
-func runSwitchBulk(ctx context.Context, handles []switchHandle, stdout, stderr, debugW io.Writer) int {
+func runSwitchBulk(ctx context.Context, handles []switchHandle, opts switchOpts, stdout, stderr, debugW io.Writer) int {
 	var eligible []switchHandle
 	for _, h := range handles {
 		stored, err := h.store.List(ctx)
@@ -468,7 +543,7 @@ func runSwitchBulk(ctx context.Context, handles []switchHandle, stdout, stderr, 
 	exitCode := 0
 	for _, h := range eligible {
 		fmt.Fprintf(stdout, "[%s]\n", h.id)
-		code := runSwitchSingle(ctx, h, "", stdout, stderr, debugW)
+		code := runSwitchSingle(ctx, h, "", opts, stdout, stderr, debugW)
 		if code != 0 {
 			exitCode = code
 		}
@@ -479,7 +554,7 @@ func runSwitchBulk(ctx context.Context, handles []switchHandle, stdout, stderr, 
 // runSwitchInferProvider handles `aistat switch --to <id>` with no provider.
 // It searches all stores for <id> and dispatches to runSwitchSingle when
 // exactly one provider matches. Ambiguous cross-provider matches exit 2.
-func runSwitchInferProvider(ctx context.Context, handles []switchHandle, toArg string, stdout, stderr, debugW io.Writer) int {
+func runSwitchInferProvider(ctx context.Context, handles []switchHandle, toArg string, opts switchOpts, stdout, stderr, debugW io.Writer) int {
 	type match struct {
 		h    switchHandle
 		acct accounts.Account
@@ -504,7 +579,7 @@ func runSwitchInferProvider(ctx context.Context, handles []switchHandle, toArg s
 		return int(orchestrate.StatusUsageError)
 	}
 	if len(matches) == 1 {
-		return runSwitchSingle(ctx, matches[0].h, toArg, stdout, stderr, debugW)
+		return runSwitchSingle(ctx, matches[0].h, toArg, opts, stdout, stderr, debugW)
 	}
 	// More than one match — check if they're from different providers.
 	providerSet := map[string]bool{}

@@ -1,9 +1,17 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/drogers0/aistat/v2/internal/accounts"
 	"github.com/drogers0/aistat/v2/internal/autoswitch"
+	"github.com/drogers0/aistat/v2/internal/providers"
+	"github.com/drogers0/aistat/v2/internal/testutil"
 )
 
 func th(fiveHour, weekly float64, fiveOff, weeklyOff bool) autoswitch.Thresholds {
@@ -73,5 +81,248 @@ func TestUsageSummary(t *testing.T) {
 				t.Errorf("usageSummary = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// withEnvFilePath points the threshold env-file resolution at path.
+func withEnvFilePath(t *testing.T, path string) {
+	t.Helper()
+	old := autoswitchEnvPath
+	autoswitchEnvPath = func() (string, error) { return path, nil }
+	t.Cleanup(func() { autoswitchEnvPath = old })
+}
+
+// withNotifyCapture records notifications as "Title: message" strings.
+func withNotifyCapture(t *testing.T) *[]string {
+	t.Helper()
+	var got []string
+	old := sendNotification
+	sendNotification = func(_ context.Context, title, message string) error {
+		got = append(got, title+": "+message)
+		return nil
+	}
+	t.Cleanup(func() { sendNotification = old })
+	return &got
+}
+
+// clearThresholdEnv guards the test against the developer's real environment.
+func clearThresholdEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv(autoswitch.EnvFiveHour, "")
+	t.Setenv(autoswitch.EnvWeekly, "")
+}
+
+// seedTwoAccounts stores work (active) + personal and stubs the active UUID.
+func seedTwoAccounts(t *testing.T) *accounts.MemoryStore {
+	t.Helper()
+	ms := withMemoryStore(t)
+	now := time.Now()
+	seedAccount(t, ms, "uuid-work", "work@example.com", "default_claude_max_20x", now.Add(-2*time.Hour))
+	seedAccount(t, ms, "uuid-personal", "personal@example.com", "default_claude_max_5x", now.Add(-1*time.Hour))
+	withSwitchActiveUUID(t, "uuid-work")
+	return ms
+}
+
+func TestSwitchIfNeeded(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{"below threshold prints no switch needed", func(t *testing.T) {
+			clearThresholdEnv(t)
+			withEnvFilePath(t, filepath.Join(t.TempDir(), "absent.env"))
+			seedTwoAccounts(t)
+			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
+				return makeLimitsFull(map[string]float64{"five_hour": 58, "seven_day": 50}), nil
+			})
+			written, _ := withWriteBlob(t)
+			notes := withNotifyCapture(t)
+			r := runSwitchTest("claude", "--if-needed", "--notify")
+			wantExit(t, r, 0)
+			wantOut(t, r, "no switch needed (five_hour at 42%)")
+			if len(*written) != 0 {
+				t.Errorf("live blob written despite no trigger: %s", *written)
+			}
+			if len(*notes) != 0 {
+				t.Errorf("unexpected notifications: %v", *notes)
+			}
+		}},
+		{"5h over threshold switches and notifies", func(t *testing.T) {
+			clearThresholdEnv(t)
+			withEnvFilePath(t, filepath.Join(t.TempDir(), "absent.env"))
+			seedTwoAccounts(t)
+			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
+				return makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50}), nil
+			})
+			withSwitchClient(t, &stubSwitchClient{fetchResults: []providers.AccountResult{
+				{UUID: "uuid-work", Email: "work@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50})},
+				{UUID: "uuid-personal", Email: "personal@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 90, "seven_day": 80})},
+			}})
+			written, _ := withWriteBlob(t)
+			notes := withNotifyCapture(t)
+			r := runSwitchTest("claude", "--if-needed", "--notify")
+			wantExit(t, r, 0)
+			wantOut(t, r, "switched to personal@example.com")
+			if len(*written) == 0 {
+				t.Fatal("expected live blob write")
+			}
+			if len(*notes) != 1 || (*notes)[0] != "Claude: switched to personal@example.com (five_hour at 87%)" {
+				t.Errorf("notifications = %v", *notes)
+			}
+		}},
+		{"weekly over threshold switches", func(t *testing.T) {
+			clearThresholdEnv(t)
+			withEnvFilePath(t, filepath.Join(t.TempDir(), "absent.env"))
+			seedTwoAccounts(t)
+			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
+				return makeLimitsFull(map[string]float64{"five_hour": 60, "seven_day": 4}), nil
+			})
+			withSwitchClient(t, &stubSwitchClient{fetchResults: []providers.AccountResult{
+				{UUID: "uuid-work", Email: "work@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 60, "seven_day": 4})},
+				{UUID: "uuid-personal", Email: "personal@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 90, "seven_day": 80})},
+			}})
+			_, _ = withWriteBlob(t)
+			notes := withNotifyCapture(t)
+			r := runSwitchTest("claude", "--if-needed", "--notify")
+			wantExit(t, r, 0)
+			wantOut(t, r, "switched to personal@example.com")
+			if len(*notes) != 1 || (*notes)[0] != "Claude: switched to personal@example.com (seven_day at 96%)" {
+				t.Errorf("notifications = %v", *notes)
+			}
+		}},
+		{"triggered but already on best warns via notification", func(t *testing.T) {
+			clearThresholdEnv(t)
+			withEnvFilePath(t, filepath.Join(t.TempDir(), "absent.env"))
+			seedTwoAccounts(t)
+			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
+				return makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50}), nil
+			})
+			withSwitchClient(t, &stubSwitchClient{fetchResults: []providers.AccountResult{
+				{UUID: "uuid-work", Email: "work@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50})},
+				{UUID: "uuid-personal", Email: "personal@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 5, "seven_day": 50})},
+			}})
+			written, _ := withWriteBlob(t)
+			notes := withNotifyCapture(t)
+			r := runSwitchTest("claude", "--if-needed", "--notify")
+			wantExit(t, r, 0)
+			wantOut(t, r, "already on best account (work@example.com)")
+			if len(*written) != 0 {
+				t.Errorf("live blob written despite already-on-best: %s", *written)
+			}
+			if len(*notes) != 1 || (*notes)[0] != "Claude: five_hour at 87%, no better account available" {
+				t.Errorf("notifications = %v", *notes)
+			}
+		}},
+		{"unknown active account fails closed", func(t *testing.T) {
+			clearThresholdEnv(t)
+			withEnvFilePath(t, filepath.Join(t.TempDir(), "absent.env"))
+			ms := withMemoryStore(t)
+			now := time.Now()
+			seedAccount(t, ms, "uuid-work", "work@example.com", "default_claude_max_20x", now)
+			seedAccount(t, ms, "uuid-personal", "personal@example.com", "default_claude_max_5x", now)
+			withSwitchActiveUUID(t, "")
+			written, _ := withWriteBlob(t)
+			r := runSwitchTest("claude", "--if-needed")
+			wantExit(t, r, 1)
+			wantErrOut(t, r, "cannot determine the active account; skipping conditional switch")
+			if len(*written) != 0 {
+				t.Errorf("live blob written despite fail-closed: %s", *written)
+			}
+		}},
+		{"active usage fetch error fails closed", func(t *testing.T) {
+			clearThresholdEnv(t)
+			withEnvFilePath(t, filepath.Join(t.TempDir(), "absent.env"))
+			seedTwoAccounts(t)
+			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
+				return nil, errors.New("boom")
+			})
+			r := runSwitchTest("claude", "--if-needed")
+			wantExit(t, r, 1)
+			wantErrOut(t, r, "usage fetch for active account failed")
+		}},
+		{"if-needed with to is a usage error", func(t *testing.T) {
+			r := runSwitchTest("claude", "--if-needed", "--to", "work")
+			wantExit(t, r, 2)
+			wantErrOut(t, r, "--if-needed cannot be combined with --to")
+		}},
+		{"invalid env threshold is a usage error", func(t *testing.T) {
+			withEnvFilePath(t, filepath.Join(t.TempDir(), "absent.env"))
+			t.Setenv(autoswitch.EnvFiveHour, "banana")
+			r := runSwitchTest("claude", "--if-needed")
+			wantExit(t, r, 2)
+			wantErrOut(t, r, "(source: environment)")
+		}},
+		{"env file threshold is honored", func(t *testing.T) {
+			clearThresholdEnv(t)
+			path := filepath.Join(t.TempDir(), "autoswitch.env")
+			testutil.WantNoErr(t, autoswitch.WriteEnvFile(path, "50", "95"))
+			withEnvFilePath(t, path)
+			seedTwoAccounts(t)
+			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
+				return makeLimitsFull(map[string]float64{"five_hour": 45, "seven_day": 80}), nil
+			})
+			withSwitchClient(t, &stubSwitchClient{fetchResults: []providers.AccountResult{
+				{UUID: "uuid-work", Email: "work@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 45, "seven_day": 80})},
+				{UUID: "uuid-personal", Email: "personal@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 90, "seven_day": 80})},
+			}})
+			_, _ = withWriteBlob(t)
+			r := runSwitchTest("claude", "--if-needed")
+			wantExit(t, r, 0)
+			wantOut(t, r, "switched to personal@example.com")
+		}},
+		{"off in env disables the 5h trigger", func(t *testing.T) {
+			clearThresholdEnv(t)
+			withEnvFilePath(t, filepath.Join(t.TempDir(), "absent.env"))
+			t.Setenv(autoswitch.EnvFiveHour, "off")
+			seedTwoAccounts(t)
+			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
+				return makeLimitsFull(map[string]float64{"five_hour": 1, "seven_day": 50}), nil
+			})
+			r := runSwitchTest("claude", "--if-needed")
+			wantExit(t, r, 0)
+			wantOut(t, r, "no switch needed (five_hour at 99%)")
+		}},
+		{"bulk without provider applies the gate per provider", func(t *testing.T) {
+			clearThresholdEnv(t)
+			withEnvFilePath(t, filepath.Join(t.TempDir(), "absent.env"))
+			seedTwoAccounts(t)
+			withCodexMemoryStore(t)
+			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
+				return makeLimitsFull(map[string]float64{"five_hour": 58, "seven_day": 50}), nil
+			})
+			written, _ := withWriteBlob(t)
+			r := runSwitchTest("--if-needed")
+			wantExit(t, r, 0)
+			wantOut(t, r, "[claude]")
+			wantOut(t, r, "no switch needed (five_hour at 42%)")
+			if strings.Contains(r.stdout, "[codex]") {
+				t.Errorf("codex must be skipped with <2 stored accounts:\n%s", r.stdout)
+			}
+			if len(*written) != 0 {
+				t.Errorf("live blob written despite no trigger: %s", *written)
+			}
+		}},
+		{"switch without notify flag stays silent", func(t *testing.T) {
+			clearThresholdEnv(t)
+			withEnvFilePath(t, filepath.Join(t.TempDir(), "absent.env"))
+			seedTwoAccounts(t)
+			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
+				return makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50}), nil
+			})
+			withSwitchClient(t, &stubSwitchClient{fetchResults: []providers.AccountResult{
+				{UUID: "uuid-work", Email: "work@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50})},
+				{UUID: "uuid-personal", Email: "personal@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 90, "seven_day": 80})},
+			}})
+			_, _ = withWriteBlob(t)
+			notes := withNotifyCapture(t)
+			r := runSwitchTest("claude", "--if-needed")
+			wantExit(t, r, 0)
+			if len(*notes) != 0 {
+				t.Errorf("unexpected notifications without --notify: %v", *notes)
+			}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
 	}
 }
