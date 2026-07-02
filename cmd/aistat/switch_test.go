@@ -132,6 +132,7 @@ func TestScoreAccount(t *testing.T) {
 		{"usable exactly at boundary", map[string]float64{"seven_day": 1.0}, false, 20, 0},
 		{"sustained takes min across long windows", map[string]float64{"five_hour": 100, "seven_day": 80, "thirty_day": 5}, false, 20, 1},
 		{"fable window binds sustained", map[string]float64{"five_hour": 100, "seven_day": 80, "seven_day_fable": 5}, false, 20, 1},
+		{"exhausted fable alone gates the account", map[string]float64{"five_hour": 100, "seven_day": 80, "seven_day_fable": 0.5}, true, 20, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

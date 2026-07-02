@@ -13,7 +13,7 @@ import (
 // known limit key per provider. Update this table whenever a provider adds
 // a new known limit key.
 var textLabels = map[string][]struct{ Key, Label string }{
-	"claude":  {{"five_hour", "5-hour"}, {"seven_day", "7-day"}, {"seven_day_sonnet", "7-day sonnet"}},
+	"claude":  {{"five_hour", "5-hour"}, {"seven_day", "7-day"}, {"seven_day_sonnet", "7-day sonnet"}, {"seven_day_fable", "7-day fable"}},
 	"codex":   {{"five_hour", "5-hour"}, {"seven_day", "7-day"}, {"code_review_seven_day", "Code review 7-day"}},
 	"copilot": {{"month", "month"}},
 }
