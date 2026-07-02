@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.drogers0.aistat.autoswitch</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/aistat</string>
+		<string>switch</string>
+		<string>--if-needed</string>
+		<string>--notify</string>
+	</array>
+	<key>StartInterval</key>
+	<integer>300</integer>
+	<key>StandardOutPath</key>
+	<string>/Users/u/Library/Logs/aistat-autoswitch.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/u/Library/Logs/aistat-autoswitch.log</string>
+</dict>
+</plist>
