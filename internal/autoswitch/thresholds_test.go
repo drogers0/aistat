@@ -11,7 +11,7 @@ func TestParseThreshold(t *testing.T) {
 		in      string
 		wantPct float64
 		wantOff bool
-		wantErr string // "" = kein Fehler; sonst Substring
+		wantErr string // "" = no error; otherwise a substring
 	}{
 		{"plain integer", "85", 85, false, ""},
 		{"lower bound", "1", 1, false, ""},
@@ -23,6 +23,10 @@ func TestParseThreshold(t *testing.T) {
 		{"float rejected", "85.5", 0, false, `invalid threshold "85.5"`},
 		{"empty rejected", "", 0, false, `invalid threshold ""`},
 		{"uppercase OFF rejected", "OFF", 0, false, `invalid threshold "OFF"`},
+		{"negative rejected", "-1", 0, false, `invalid threshold "-1"`},
+		{"whitespace rejected", " 85", 0, false, `invalid threshold " 85"`},
+		{"trailing whitespace rejected", "85 ", 0, false, `invalid threshold "85 "`},
+		{"overflow rejected", "99999999999999999999999999999", 0, false, `invalid threshold`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

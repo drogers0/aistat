@@ -21,6 +21,9 @@ const (
 
 // Threshold is one window's trigger level. Off (value "off") disables the
 // window as a trigger entirely.
+// The zero value (Pct 0, Off false) means "trigger at 0% used", not
+// "disabled" — Resolve always sets one field explicitly; consumers must not
+// treat Threshold{} as unset.
 type Threshold struct {
 	Pct float64
 	Off bool
@@ -63,14 +66,14 @@ func resolveOne(key string, def float64, getenv func(string) string, envFile map
 	if v := getenv(key); v != "" {
 		t, err := ParseThreshold(v)
 		if err != nil {
-			return Threshold{}, fmt.Errorf("%s: %s (source: environment)", key, err)
+			return Threshold{}, fmt.Errorf("%s: %w (source: environment)", key, err)
 		}
 		return t, nil
 	}
 	if v, ok := envFile[key]; ok {
 		t, err := ParseThreshold(v)
 		if err != nil {
-			return Threshold{}, fmt.Errorf("%s: %s (source: autoswitch.env)", key, err)
+			return Threshold{}, fmt.Errorf("%s: %w (source: autoswitch.env)", key, err)
 		}
 		return t, nil
 	}
