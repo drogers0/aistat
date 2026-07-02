@@ -390,6 +390,14 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, opts swi
 	var condReason string
 	var condActiveLimits map[string]providers.Limit
 
+	// notifyNoBetter fires the --if-needed warning at the two "threshold hit
+	// but nothing better" dead ends so the text cannot drift between them.
+	notifyNoBetter := func() {
+		if opts.notify && condReason != "" {
+			notifyBestEffort(ctx, h.id, condReason+", no better account available", stderr)
+		}
+	}
+
 	var target accounts.Account
 
 	if toArg != "" {
@@ -438,10 +446,12 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, opts swi
 		}
 
 		if len(stored) == 1 && stored[0].UUID == activeUUID {
-			if opts.notify && condReason != "" {
-				notifyBestEffort(ctx, h.id, condReason+", no better account available", stderr)
-			}
+			notifyNoBetter()
 			fmt.Fprintf(stderr, "only one account stored; nothing to switch to (%s)\n", h.loginHint)
+			if opts.ifNeeded {
+				// A timer-driven poll with no alternative is "nothing to do", not misuse.
+				return 0
+			}
 			return int(orchestrate.StatusUsageError)
 		}
 
@@ -479,9 +489,7 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, opts swi
 			}
 			if liveErr == nil {
 				if !bestScore.better(scoreAccount(activeLimits, activeAcct.LastSeenAt)) {
-					if opts.notify && condReason != "" {
-						notifyBestEffort(ctx, h.id, condReason+", no better account available", stderr)
-					}
+					notifyNoBetter()
 					fmt.Fprintf(stdout, "already on best account (%s)\n", prevEmail)
 					return 0
 				}

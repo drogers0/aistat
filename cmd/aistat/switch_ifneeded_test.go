@@ -302,6 +302,59 @@ func TestSwitchIfNeeded(t *testing.T) {
 				t.Errorf("live blob written despite no trigger: %s", *written)
 			}
 		}},
+		{"triggered with single stored account exits zero and warns", func(t *testing.T) {
+			clearThresholdEnv(t)
+			withEnvFilePath(t, filepath.Join(t.TempDir(), "absent.env"))
+			ms := withMemoryStore(t)
+			seedAccount(t, ms, "uuid-work", "work@example.com", "default_claude_max_20x", time.Now())
+			withSwitchActiveUUID(t, "uuid-work")
+			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
+				return makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50}), nil
+			})
+			written, _ := withWriteBlob(t)
+			notes := withNotifyCapture(t)
+			r := runSwitchTest("claude", "--if-needed", "--notify")
+			wantExit(t, r, 0)
+			wantErrOut(t, r, "only one account stored; nothing to switch to")
+			if len(*notes) != 1 || (*notes)[0] != "Claude: five_hour at 87%, no better account available" {
+				t.Errorf("notifications = %v", *notes)
+			}
+			if len(*written) != 0 {
+				t.Errorf("live blob written despite single-account dead end: %s", *written)
+			}
+		}},
+		{"to with notify sends plain notification", func(t *testing.T) {
+			seedTwoAccounts(t)
+			withSwitchClient(t, &stubSwitchClient{})
+			_, _ = withWriteBlob(t)
+			notes := withNotifyCapture(t)
+			r := runSwitchTest("claude", "--to", "personal", "--notify")
+			wantExit(t, r, 0)
+			wantOut(t, r, "switched to personal@example.com")
+			if len(*notes) != 1 || (*notes)[0] != "Claude: switched to personal@example.com" {
+				t.Errorf("notifications = %v", *notes)
+			}
+		}},
+		{"notification failure never changes the exit code", func(t *testing.T) {
+			clearThresholdEnv(t)
+			withEnvFilePath(t, filepath.Join(t.TempDir(), "absent.env"))
+			seedTwoAccounts(t)
+			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
+				return makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50}), nil
+			})
+			withSwitchClient(t, &stubSwitchClient{fetchResults: []providers.AccountResult{
+				{UUID: "uuid-work", Email: "work@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50})},
+				{UUID: "uuid-personal", Email: "personal@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 90, "seven_day": 80})},
+			}})
+			_, _ = withWriteBlob(t)
+			old := sendNotification
+			sendNotification = func(_ context.Context, _, _ string) error { return errors.New("osascript exploded") }
+			t.Cleanup(func() { sendNotification = old })
+			r := runSwitchTest("claude", "--if-needed", "--notify")
+			wantExit(t, r, 0)
+			wantOut(t, r, "switched to personal@example.com")
+			wantErrOut(t, r, "notification failed")
+		}},
 		{"switch without notify flag stays silent", func(t *testing.T) {
 			clearThresholdEnv(t)
 			withEnvFilePath(t, filepath.Join(t.TempDir(), "absent.env"))
