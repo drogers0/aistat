@@ -137,6 +137,15 @@ Auto-pick buckets candidates by 5% (so 87% and 89% are equivalent) and breaks ti
 
 ### Conditional switching (`--if-needed`) and `aistat autoswitch`
 
+**Why this exists:** when a Claude subscription hits its 5-hour session limit, Claude Code stops mid-task and waits for the reset — usually you only notice because your agent went silent. If you keep a second account with headroom, the fix is a credential switch, and `aistat autoswitch install` automates exactly that: a background launchd agent re-checks the active account every 5 minutes and, **shortly before** a limit fills up (defaults: session window ≥ 85%, weekly window ≥ 95%), rotates the live credential to the stored account with the most headroom and posts a desktop notification. Claude Code picks up the new credential on its next request, so work continues uninterrupted instead of hitting the wall.
+
+```console
+$ aistat autoswitch install     # check every 300s; switch at 5h ≥ 85% or weekly ≥ 95%
+$ aistat autoswitch status      # installed/loaded, interval, effective thresholds
+```
+
+Retune anytime by editing `~/.config/aistat/autoswitch.env` — the next poll picks the new thresholds up, no reinstall needed.
+
 `aistat switch --if-needed` only switches when the active account's usage crosses a threshold — otherwise it prints `no switch needed (five_hour at 42%)` and exits 0. Thresholds: `AISTAT_IF_ABOVE_5H` (default 85) for the 5-hour window and `AISTAT_IF_ABOVE_WEEKLY` (default 95) for the binding long window (`seven_day`/`thirty_day`, plus Claude's model-scoped `seven_day_fable` — an exhausted Fable weekly triggers a switch too); either accepts `1`-`100` or `off` to disable that window. Resolution order per run: process env > `~/.config/aistat/autoswitch.env` > defaults, so the env file lets a scheduled run retune without touching a shell profile. Add `--notify` for a desktop notification (macOS) on an actual switch or on a threshold hit with no better account available. `--if-needed` cannot be combined with `--to`, and it fails closed: an unresolvable active account or a usage-fetch error exits 1 without writing anything.
 
 `aistat autoswitch install|uninstall|status` (macOS only) manages a launchd agent that runs `switch --if-needed --notify` on a timer (`StartInterval`, default 300s): `install` writes the thresholds to the env file above and loads the agent, `uninstall` unloads it and removes the plist (keeping the thresholds file), `status` reports installed/loaded state, interval, and effective thresholds. On Linux, wire the equivalent cron or systemd timer yourself around `aistat switch --if-needed --notify` (notifications no-op off darwin).
