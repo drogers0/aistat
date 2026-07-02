@@ -205,13 +205,10 @@ var longKeys = []string{"seven_day", "thirty_day"}
 // longRemaining is the binding (minimum) RemainingPercent across present long
 // windows, or 100 when none are present (no sustained constraint).
 func longRemaining(l map[string]providers.Limit) float64 {
-	r := 100.0
-	for _, k := range longKeys {
-		if w, ok := l[k]; ok && w.RemainingPercent < r {
-			r = w.RemainingPercent
-		}
+	if _, w, ok := bindingLongWindow(l); ok {
+		return w.RemainingPercent
 	}
-	return r
+	return 100.0
 }
 
 // score is the lexicographic auto-pick rank for one account. Windows are ordered

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/drogers0/aistat/v2/internal/autoswitch"
 	"github.com/drogers0/aistat/v2/internal/notify"
@@ -12,7 +13,7 @@ import (
 
 // switchOpts carries the conditional-switch mode through the dispatch helpers.
 // The zero value means unconditional switch with no notifications — exactly
-// the pre---if-needed behavior.
+// the behavior before --if-needed existed.
 type switchOpts struct {
 	ifNeeded bool
 	notify   bool
@@ -29,24 +30,32 @@ var (
 )
 
 // notifyBestEffort sends a desktop notification, logging failure to stderr
-// without affecting the exit code.
+// without affecting the exit code. Bounded: fire-and-forget osascript must
+// not hang a launchd run on a stuck permission prompt.
 func notifyBestEffort(ctx context.Context, providerID, message string, stderr io.Writer) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	if err := sendNotification(ctx, providers.Title(providerID), message); err != nil {
 		fmt.Fprintf(stderr, "aistat: %s: notification failed: %s\n", providerID, err)
 	}
 }
 
 // bindingLongWindow returns the present long window (seven_day/thirty_day)
-// with the least remaining headroom. ok=false when none is present.
-func bindingLongWindow(l map[string]providers.Limit) (key string, used float64, ok bool) {
+// with the least remaining headroom; ties resolve to the earlier longKeys
+// entry, matching longRemaining's historical pick. ok=false when none is
+// present. Comparison uses RemainingPercent while callers display UsedPercent —
+// the two are complements by provider construction.
+func bindingLongWindow(l map[string]providers.Limit) (key string, w providers.Limit, ok bool) {
 	remaining := 100.0
 	for _, k := range longKeys {
-		if w, present := l[k]; present && w.RemainingPercent <= remaining {
-			remaining = w.RemainingPercent
-			key, used, ok = k, w.UsedPercent, true
+		if lw, present := l[k]; present {
+			if !ok || lw.RemainingPercent < remaining {
+				remaining = lw.RemainingPercent
+				key, w, ok = k, lw, true
+			}
 		}
 	}
-	return key, used, ok
+	return key, w, ok
 }
 
 // triggerReason reports whether the active account's limits breach th and, if
@@ -59,8 +68,8 @@ func triggerReason(l map[string]providers.Limit, th autoswitch.Thresholds) (stri
 		}
 	}
 	if !th.Weekly.Off {
-		if key, used, ok := bindingLongWindow(l); ok && used >= th.Weekly.Pct {
-			return fmt.Sprintf("%s at %.0f%%", key, used), true
+		if key, w, ok := bindingLongWindow(l); ok && w.UsedPercent >= th.Weekly.Pct {
+			return fmt.Sprintf("%s at %.0f%%", key, w.UsedPercent), true
 		}
 	}
 	return "", false
@@ -72,8 +81,8 @@ func usageSummary(l map[string]providers.Limit) string {
 	if w, ok := l[shortKey]; ok {
 		return fmt.Sprintf("%s at %.0f%%", shortKey, w.UsedPercent)
 	}
-	if key, used, ok := bindingLongWindow(l); ok {
-		return fmt.Sprintf("%s at %.0f%%", key, used)
+	if key, w, ok := bindingLongWindow(l); ok {
+		return fmt.Sprintf("%s at %.0f%%", key, w.UsedPercent)
 	}
 	return "no usage windows"
 }

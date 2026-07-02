@@ -29,6 +29,8 @@ func TestTriggerReason(t *testing.T) {
 			th(85, 95, false, false), "five_hour at 87%", true},
 		{"weekly triggers when 5h is fine", map[string]float64{"five_hour": 60, "seven_day": 4},
 			th(85, 95, false, false), "seven_day at 96%", true},
+		{"weekly at exact threshold triggers", map[string]float64{"five_hour": 60, "seven_day": 5},
+			th(85, 95, false, false), "seven_day at 95%", true},
 		{"thirty_day is the binding long window", map[string]float64{"five_hour": 60, "seven_day": 50, "thirty_day": 3},
 			th(85, 95, false, false), "thirty_day at 97%", true},
 		{"5h checked before weekly", map[string]float64{"five_hour": 10, "seven_day": 2},
@@ -62,6 +64,7 @@ func TestUsageSummary(t *testing.T) {
 	}{
 		{"prefers five_hour", map[string]float64{"five_hour": 58, "seven_day": 10}, "five_hour at 42%"},
 		{"falls back to binding long window", map[string]float64{"seven_day": 70, "thirty_day": 20}, "thirty_day at 80%"},
+		{"tie resolves to first long key", map[string]float64{"seven_day": 50, "thirty_day": 50}, "seven_day at 50%"},
 		{"no windows", map[string]float64{}, "no usage windows"},
 	}
 	for _, tt := range tests {
