@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/drogers0/aistat/v2/internal/accounts"
@@ -125,6 +126,19 @@ type window struct {
 	ResetsAt    *string `json:"resets_at"`
 }
 
+// scopedLimit is one entry in the "limits" array — Anthropic's migration
+// target for model-scoped limits (see fetchLimitsFresh below).
+type scopedLimit struct {
+	Kind     string  `json:"kind"`
+	Percent  float64 `json:"percent"`
+	ResetsAt *string `json:"resets_at"`
+	Scope    *struct {
+		Model *struct {
+			DisplayName string `json:"display_name"`
+		} `json:"model"`
+	} `json:"scope"`
+}
+
 // warnf writes a warn line to c.warn (always visible, unlike debug lines).
 func (c *Client) warnf(format string, args ...any) {
 	if c.warn != nil {
@@ -215,6 +229,52 @@ func (c *Client) fetchLimitsFresh(ctx context.Context, accessToken string) (map[
 			ResetAfterSeconds: secs,
 		}
 	}
+
+	// "limits" is Anthropic's migration target for model-scoped weekly limits
+	// (e.g. a "Fable"-scoped weekly window alongside the aggregate seven_day).
+	// Only weekly_scoped entries are surfaced, as seven_day_<model>; session and
+	// weekly_all duplicate five_hour/seven_day above and are skipped. Top-level
+	// keys win on collision since both can describe the same window during the
+	// migration period. Unlike the whitelist loop above, a malformed array or an
+	// unparseable resets_at is skipped rather than failing the response: these
+	// entries are additive/informational-plus and must never take five_hour /
+	// seven_day down with them.
+	if rawLimits, ok := raw["limits"]; ok {
+		var scoped []scopedLimit
+		if err := json.Unmarshal(rawLimits, &scoped); err == nil {
+			for _, sl := range scoped {
+				if sl.Kind != "weekly_scoped" {
+					continue
+				}
+				if sl.Scope == nil || sl.Scope.Model == nil || sl.Scope.Model.DisplayName == "" {
+					continue
+				}
+				if sl.ResetsAt == nil {
+					continue
+				}
+				resets, err := time.Parse(time.RFC3339Nano, *sl.ResetsAt)
+				if err != nil {
+					continue
+				}
+				resets = resets.UTC().Truncate(time.Second)
+				secs := int(resets.Sub(now).Seconds())
+				if secs < 0 {
+					secs = 0
+				}
+				key := "seven_day_" + strings.ToLower(strings.ReplaceAll(sl.Scope.Model.DisplayName, " ", "_"))
+				if _, exists := limits[key]; exists {
+					continue
+				}
+				limits[key] = providers.Limit{
+					UsedPercent:       sl.Percent,
+					RemainingPercent:  100 - sl.Percent,
+					ResetsAt:          resets,
+					ResetAfterSeconds: secs,
+				}
+			}
+		}
+	}
+
 	return limits, nil
 }
 
