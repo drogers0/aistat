@@ -94,6 +94,7 @@ These are upstream OAuth-provider behaviors aistat cannot work around without re
 ## Known limitations (autoswitch)
 
 - **uninstall assumes bootout succeeds.** `aistat autoswitch uninstall` ignores `launchctl bootout` failures (the job is usually simply not loaded) and removes the plist. In the unlikely case bootout failed for a real reason, the launchd job can keep running from its in-memory registration while `status` reports `installed: no`. Recovery: `launchctl bootout gui/$UID/com.drogers0.aistat.autoswitch` manually.
+- **First launchd run may need Keychain approval.** The agent runs the same binary path you use interactively, so existing Keychain ACLs usually apply — but a fresh install can surface a one-time "Always Allow" prompt or a denied read. Check `~/Library/Logs/aistat-autoswitch.log` when the agent seems idle.
 
 ## Working in this repo
 
