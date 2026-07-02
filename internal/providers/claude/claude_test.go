@@ -432,6 +432,53 @@ func TestFetch_parse(t *testing.T) {
 				t.Error("expected seven_day_fable_turbo window from display_name \"Fable Turbo\"")
 			}
 		}},
+		{"limits array: punctuation-heavy display name slugged", func(t *testing.T) {
+			body := []byte(`{"five_hour":{"utilization":10.0,"resets_at":"2027-01-01T00:00:00+00:00"},"limits":[` +
+				`{"kind":"weekly_scoped","percent":25,"resets_at":"2027-01-01T00:00:00+00:00","scope":{"model":{"display_name":"--Fable 2.0 (Preview)--"}}}` +
+				`]}`)
+			live := makeCred("tok-live", "ref", 0)
+			store := testutil.MemStore(t, makeAccount("u1", "a@b.com", "tok-live", "ref", 0))
+
+			usageSrv := testutil.NewStubServer(t, body, 200, nil)
+			profileSrv := testutil.RejectServer(t, "profile")
+			refreshSrv := testutil.RejectServer(t, "refresh")
+
+			out, err := buildClient(t, usageSrv, profileSrv, refreshSrv, live, store, nil, nil).Fetch(context.Background())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			limits := out.Accounts[0].Limits
+			if _, ok := limits["seven_day_fable_2_0_preview"]; !ok {
+				t.Errorf("expected seven_day_fable_2_0_preview from display_name \"--Fable 2.0 (Preview)--\", got: %v", keys(limits))
+			}
+		}},
+		{"limits array: same-loop duplicate slugs keep the first entry", func(t *testing.T) {
+			body := []byte(`{"five_hour":{"utilization":10.0,"resets_at":"2027-01-01T00:00:00+00:00"},"limits":[` +
+				`{"kind":"weekly_scoped","percent":40,"resets_at":"2027-01-01T00:00:00+00:00","scope":{"model":{"display_name":"Fable"}}},` +
+				`{"kind":"weekly_scoped","percent":80,"resets_at":"2027-01-02T00:00:00+00:00","scope":{"model":{"display_name":"fable"}}}` +
+				`]}`)
+			live := makeCred("tok-live", "ref", 0)
+			store := testutil.MemStore(t, makeAccount("u1", "a@b.com", "tok-live", "ref", 0))
+
+			usageSrv := testutil.NewStubServer(t, body, 200, nil)
+			profileSrv := testutil.RejectServer(t, "profile")
+			refreshSrv := testutil.RejectServer(t, "refresh")
+
+			out, err := buildClient(t, usageSrv, profileSrv, refreshSrv, live, store, nil, nil).Fetch(context.Background())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if e := out.Accounts[0].Error; e != "" {
+				t.Fatalf("same-loop slug collision must not produce a per-account error: %q", e)
+			}
+			limits := out.Accounts[0].Limits
+			if len(limits) != 2 {
+				t.Fatalf("expected exactly five_hour + one seven_day_fable, got %d: %v", len(limits), keys(limits))
+			}
+			if got := limits["seven_day_fable"].UsedPercent; got != 40.0 {
+				t.Errorf("seven_day_fable used_percent = %v, want 40.0 (first entry wins)", got)
+			}
+		}},
 		{"limits array: weekly_scoped with null resets_at skipped", func(t *testing.T) {
 			body := []byte(`{"five_hour":{"utilization":10.0,"resets_at":"2027-01-01T00:00:00+00:00"},"limits":[` +
 				`{"kind":"weekly_scoped","percent":20,"resets_at":null,"scope":{"model":{"display_name":"NullReset"}}}` +

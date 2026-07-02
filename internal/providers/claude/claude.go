@@ -139,6 +139,46 @@ type scopedLimit struct {
 	} `json:"scope"`
 }
 
+// parseReset normalizes a window's resets_at: UTC, second precision, and the
+// seconds-until-reset clamped at zero. now must already be UTC-truncated.
+func parseReset(s string, now time.Time) (resets time.Time, secs int, err error) {
+	resets, err = time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		return time.Time{}, 0, err
+	}
+	resets = resets.UTC().Truncate(time.Second)
+	secs = int(resets.Sub(now).Seconds())
+	if secs < 0 {
+		secs = 0
+	}
+	return resets, secs, nil
+}
+
+// scopedWindowKey derives the seven_day_<model> window key from a scoped
+// limit's model display name. Defensive slug: lowercase, every rune outside
+// [a-z0-9] becomes '_', consecutive '_' collapse, and leading/trailing '_'
+// are trimmed. Returns "" when nothing survives (empty or punctuation-only
+// names) so callers can skip the entry.
+func scopedWindowKey(displayName string) string {
+	var b strings.Builder
+	pendingSep := false
+	for _, r := range strings.ToLower(displayName) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			if pendingSep && b.Len() > 0 {
+				b.WriteByte('_')
+			}
+			b.WriteRune(r)
+			pendingSep = false
+		} else {
+			pendingSep = true
+		}
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	return "seven_day_" + b.String()
+}
+
 // warnf writes a warn line to c.warn (always visible, unlike debug lines).
 func (c *Client) warnf(format string, args ...any) {
 	if c.warn != nil {
@@ -213,14 +253,9 @@ func (c *Client) fetchLimitsFresh(ctx context.Context, accessToken string) (map[
 		if win.ResetsAt == nil {
 			continue
 		}
-		resets, err := time.Parse(time.RFC3339Nano, *win.ResetsAt)
+		resets, secs, err := parseReset(*win.ResetsAt, now)
 		if err != nil {
 			return nil, fmt.Errorf("claude window %s has unparseable resets_at %q: %w", key, *win.ResetsAt, err)
-		}
-		resets = resets.UTC().Truncate(time.Second)
-		secs := int(resets.Sub(now).Seconds())
-		if secs < 0 {
-			secs = 0
 		}
 		limits[key] = providers.Limit{
 			UsedPercent:       win.Utilization,
@@ -233,35 +268,41 @@ func (c *Client) fetchLimitsFresh(ctx context.Context, accessToken string) (map[
 	// "limits" is Anthropic's migration target for model-scoped weekly limits
 	// (e.g. a "Fable"-scoped weekly window alongside the aggregate seven_day).
 	// Only weekly_scoped entries are surfaced, as seven_day_<model>; session and
-	// weekly_all duplicate five_hour/seven_day above and are skipped. Top-level
-	// keys win on collision since both can describe the same window during the
-	// migration period. Unlike the whitelist loop above, a malformed array or an
-	// unparseable resets_at is skipped rather than failing the response: these
-	// entries are additive/informational-plus and must never take five_hour /
-	// seven_day down with them.
+	// weekly_all duplicate five_hour/seven_day above and are skipped, and
+	// is_active is deliberately NOT a gating condition — scoped limits surface
+	// regardless of which window the API marks active. The key derives from
+	// scope.model.display_name because scope.model.id is null in today's API
+	// responses; if Anthropic renames a model the derived key changes silently
+	// and longKeys consumers stop matching — accepted, revisit when model.id is
+	// populated. Top-level keys win on collision since both can describe the
+	// same window during the migration period. Unlike the whitelist loop above,
+	// a malformed array or an unparseable resets_at is skipped rather than
+	// failing the response: these entries are additive/informational-plus and
+	// must never take five_hour / seven_day down with them.
 	if rawLimits, ok := raw["limits"]; ok {
 		var scoped []scopedLimit
-		if err := json.Unmarshal(rawLimits, &scoped); err == nil {
+		if err := json.Unmarshal(rawLimits, &scoped); err != nil {
+			c.debugf("usage limits array unparseable; scoped windows skipped: %s", err)
+		} else {
 			for _, sl := range scoped {
 				if sl.Kind != "weekly_scoped" {
 					continue
 				}
-				if sl.Scope == nil || sl.Scope.Model == nil || sl.Scope.Model.DisplayName == "" {
+				if sl.Scope == nil || sl.Scope.Model == nil {
+					continue
+				}
+				key := scopedWindowKey(sl.Scope.Model.DisplayName)
+				if key == "" {
 					continue
 				}
 				if sl.ResetsAt == nil {
 					continue
 				}
-				resets, err := time.Parse(time.RFC3339Nano, *sl.ResetsAt)
+				resets, secs, err := parseReset(*sl.ResetsAt, now)
 				if err != nil {
+					c.debugf("scoped window %s skipped: unparseable resets_at %q", key, *sl.ResetsAt)
 					continue
 				}
-				resets = resets.UTC().Truncate(time.Second)
-				secs := int(resets.Sub(now).Seconds())
-				if secs < 0 {
-					secs = 0
-				}
-				key := "seven_day_" + strings.ToLower(strings.ReplaceAll(sl.Scope.Model.DisplayName, " ", "_"))
 				if _, exists := limits[key]; exists {
 					continue
 				}
@@ -301,12 +342,16 @@ func (c *Client) fetchLimitsCached(ctx context.Context, accessToken, uuid string
 	return limits, err
 }
 
+// debugf writes one "[debug] claude: ..." line to the doer's debug writer.
+func (c *Client) debugf(format string, args ...any) {
+	if c.doer.Debug != nil {
+		fmt.Fprintf(c.doer.Debug, "[debug] claude: "+format+"\n", args...)
+	}
+}
+
 // logCacheHit emits one [debug] line on a usage cache hit.
 func (c *Client) logCacheHit(uuid string, age time.Duration) {
-	if c.doer.Debug != nil {
-		fmt.Fprintf(c.doer.Debug, "[debug] claude: usage cache hit for %s (age %ds)\n",
-			uuid, int(age.Seconds()))
-	}
+	c.debugf("usage cache hit for %s (age %ds)", uuid, int(age.Seconds()))
 }
 
 // rotateRawBlob returns a copy of rawBlob with claudeAiOauth.accessToken,
