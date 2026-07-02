@@ -46,23 +46,31 @@ func ReadEnvFile(path string) (map[string]string, error) {
 
 // WriteEnvFile writes both threshold values, creating parent directories as
 // needed. Values are written verbatim — callers validate via ParseThreshold
-// first. The write goes through a temporary file in the same directory plus
-// os.Rename (the pattern in internal/cred/keychain_linux.go): launchd-driven
-// runs read this file every few minutes, so a torn write must never be
-// observable.
+// first. Atomic: launchd-driven runs read this file every few minutes, so a
+// torn write must never be observable.
 func WriteEnvFile(path, fiveHour, weekly string) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("creating autoswitch env directory: %w", err)
 	}
 	content := "# aistat conditional-switch thresholds: used percent 1-100, or \"off\".\n" +
 		"# Read on every `aistat switch --if-needed` run — edit freely, no reinstall needed.\n" +
 		EnvFiveHour + "=" + fiveHour + "\n" +
 		EnvWeekly + "=" + weekly + "\n"
+	if err := WriteFileAtomic(path, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("writing autoswitch env file: %w", err)
+	}
+	return nil
+}
 
-	tmp, err := os.CreateTemp(dir, ".autoswitch-*.env")
+// WriteFileAtomic writes data to path through a temporary file in the same
+// directory plus os.Rename (the pattern in internal/cred/keychain_linux.go),
+// so a concurrent reader — launchd for the plist, a launchd-driven
+// `switch --if-needed` for the env file — never observes a torn write.
+// The parent directory must already exist.
+func WriteFileAtomic(path string, data []byte, mode os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
-		return fmt.Errorf("creating temporary autoswitch env file: %w", err)
+		return fmt.Errorf("creating temporary file: %w", err)
 	}
 	tmpPath := tmp.Name()
 	committed := false
@@ -72,23 +80,23 @@ func WriteEnvFile(path, fiveHour, weekly string) error {
 		}
 	}()
 
-	if err := tmp.Chmod(0o644); err != nil {
+	if err := tmp.Chmod(mode); err != nil {
 		tmp.Close()
-		return fmt.Errorf("setting autoswitch env file mode: %w", err)
+		return fmt.Errorf("setting file mode: %w", err)
 	}
-	if _, err := tmp.WriteString(content); err != nil {
+	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
-		return fmt.Errorf("writing autoswitch env file: %w", err)
+		return fmt.Errorf("writing temporary file: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
 		tmp.Close()
-		return fmt.Errorf("syncing autoswitch env file: %w", err)
+		return fmt.Errorf("syncing temporary file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("closing autoswitch env file: %w", err)
+		return fmt.Errorf("closing temporary file: %w", err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
-		return fmt.Errorf("renaming autoswitch env file into place: %w", err)
+		return fmt.Errorf("renaming into place: %w", err)
 	}
 	committed = true
 	return nil

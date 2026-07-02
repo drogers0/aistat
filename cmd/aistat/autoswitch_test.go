@@ -82,10 +82,16 @@ func TestAutoswitch(t *testing.T) {
 				t.Error("plist must not bake in threshold values")
 			}
 			if len(*calls) != 2 || (*calls)[0][0] != "bootout" || (*calls)[1][0] != "bootstrap" {
-				t.Errorf("launchctl calls = %v, want bootout then bootstrap", *calls)
+				t.Fatalf("launchctl calls = %v, want bootout then bootstrap", *calls)
+			}
+			if want := "gui/501/" + autoswitch.LaunchdLabel; (*calls)[0][1] != want {
+				t.Errorf("bootout target = %q, want %q", (*calls)[0][1], want)
 			}
 			if (*calls)[1][1] != "gui/501" {
 				t.Errorf("bootstrap domain = %q, want gui/501", (*calls)[1][1])
+			}
+			if (*calls)[1][2] != plistPathIn(home) {
+				t.Errorf("bootstrap plist arg = %q, want %q", (*calls)[1][2], plistPathIn(home))
 			}
 		}},
 		{"install validates thresholds", func(t *testing.T) {
@@ -150,8 +156,52 @@ func TestAutoswitch(t *testing.T) {
 			wantOut(t, r, "interval: 300s")
 			wantOut(t, r, "thresholds: five_hour >=80%, weekly >=95%")
 		}},
+		{"status with corrupt env file is a usage error", func(t *testing.T) {
+			// Clear process env so it cannot mask the file-level failure.
+			t.Setenv(autoswitch.EnvFiveHour, "")
+			t.Setenv(autoswitch.EnvWeekly, "")
+			home, _ := autoswitchSeams(t, "darwin", nil)
+			if r := runAutoswitchTest("install"); r.code != 0 {
+				t.Fatalf("install failed: %+v", r)
+			}
+			envPath := filepath.Join(home, ".config", "aistat", "autoswitch.env")
+			if err := os.WriteFile(envPath, []byte("nonsense\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			r := runAutoswitchTest("status")
+			wantExit(t, r, 2)
+			wantErrOut(t, r, "malformed line (want KEY=VALUE)")
+		}},
+		{"reinstall changes the interval", func(t *testing.T) {
+			home, calls := autoswitchSeams(t, "darwin", nil)
+			if r := runAutoswitchTest("install", "--interval", "300"); r.code != 0 {
+				t.Fatalf("first install failed: %+v", r)
+			}
+			if r := runAutoswitchTest("install", "--interval", "600"); r.code != 0 {
+				t.Fatalf("reinstall failed: %+v", r)
+			}
+			if len(*calls) != 4 {
+				t.Errorf("launchctl calls after two installs = %v, want bootout+bootstrap twice", *calls)
+			}
+			r := runAutoswitchTest("status")
+			wantExit(t, r, 0)
+			wantOut(t, r, "interval: 600s")
+			if n, ok := autoswitch.ParseInterval(readFileString(t, plistPathIn(home))); !ok || n != 600 {
+				t.Errorf("plist interval after reinstall = %d/%v, want 600", n, ok)
+			}
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.run)
 	}
+}
+
+// readFileString reads path, failing the test on error.
+func readFileString(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }

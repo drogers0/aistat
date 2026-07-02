@@ -80,6 +80,7 @@ func runAutoswitch(args []string, stdout, stderr io.Writer, g globals) int {
 		verb = tail[0]
 		tail = tail[1:]
 	}
+	// Second parse so fs.NArg() reflects only truly unconsumed positionals.
 	if err := fs.Parse(tail); err != nil {
 		fmt.Fprintln(stderr, err.Error())
 		return int(orchestrate.StatusUsageError)
@@ -146,7 +147,8 @@ func runAutoswitchInstall(ctx context.Context, fiveHour, weekly string, interval
 			return int(orchestrate.StatusAnyFailed)
 		}
 	}
-	if err := os.WriteFile(paths.plist, []byte(autoswitch.PlistXML(bin, interval, paths.log)), 0o644); err != nil {
+	// Atomic: launchd may re-read the plist at any point on a reinstall.
+	if err := autoswitch.WriteFileAtomic(paths.plist, []byte(autoswitch.PlistXML(bin, interval, paths.log)), 0o644); err != nil {
 		fmt.Fprintf(stderr, "aistat: write plist: %s\n", err)
 		return int(orchestrate.StatusAnyFailed)
 	}
@@ -206,15 +208,17 @@ func runAutoswitchStatus(ctx context.Context, stdout, stderr io.Writer) int {
 	if n, ok := autoswitch.ParseInterval(string(plistData)); ok {
 		fmt.Fprintf(stdout, "interval: %ds\n", n)
 	}
+	// A corrupt or invalid thresholds file is the same misconfiguration class
+	// `switch --if-needed` maps to exit 2 — keep the exit codes aligned.
 	fileVals, err := autoswitch.ReadEnvFile(paths.env)
 	if err != nil {
 		fmt.Fprintf(stderr, "aistat: %s\n", err)
-		return int(orchestrate.StatusAnyFailed)
+		return int(orchestrate.StatusUsageError)
 	}
 	th, err := autoswitch.Resolve(os.Getenv, fileVals)
 	if err != nil {
 		fmt.Fprintf(stderr, "aistat: %s\n", err)
-		return int(orchestrate.StatusAnyFailed)
+		return int(orchestrate.StatusUsageError)
 	}
 	fmt.Fprintf(stdout, "thresholds: five_hour %s, weekly %s\n", formatThreshold(th.FiveHour), formatThreshold(th.Weekly))
 	return 0
