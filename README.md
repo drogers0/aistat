@@ -22,6 +22,7 @@ Claude usage
 - personal@example.com (active) [Max 5x]
   - 5-hour: 92.0% (resets in 4h 53m)
   - 7-day: 71.0% (resets in 2d 5h)
+  - 7-day fable: 44.0% (resets in 2d 5h)
   - 7-day sonnet: 58.0% (resets in 2d 5h)
 - work@example.com [Max 20x]
   - 5-hour: 4.0% (resets in 4h 12m)
@@ -136,7 +137,7 @@ Auto-pick buckets candidates by 5% (so 87% and 89% are equivalent) and breaks ti
 
 ### Conditional switching (`--if-needed`) and `aistat autoswitch`
 
-`aistat switch --if-needed` only switches when the active account's usage crosses a threshold — otherwise it prints `no switch needed (five_hour at 42%)` and exits 0. Thresholds: `AISTAT_IF_ABOVE_5H` (default 85) for the 5-hour window and `AISTAT_IF_ABOVE_WEEKLY` (default 95) for the binding long window (`seven_day`/`thirty_day`); either accepts `1`-`100` or `off` to disable that window. Resolution order per run: process env > `~/.config/aistat/autoswitch.env` > defaults, so the env file lets a scheduled run retune without touching a shell profile. Add `--notify` for a desktop notification (macOS) on an actual switch or on a threshold hit with no better account available. `--if-needed` cannot be combined with `--to`, and it fails closed: an unresolvable active account or a usage-fetch error exits 1 without writing anything.
+`aistat switch --if-needed` only switches when the active account's usage crosses a threshold — otherwise it prints `no switch needed (five_hour at 42%)` and exits 0. Thresholds: `AISTAT_IF_ABOVE_5H` (default 85) for the 5-hour window and `AISTAT_IF_ABOVE_WEEKLY` (default 95) for the binding long window (`seven_day`/`thirty_day`, plus Claude's model-scoped `seven_day_fable` — an exhausted Fable weekly triggers a switch too); either accepts `1`-`100` or `off` to disable that window. Resolution order per run: process env > `~/.config/aistat/autoswitch.env` > defaults, so the env file lets a scheduled run retune without touching a shell profile. Add `--notify` for a desktop notification (macOS) on an actual switch or on a threshold hit with no better account available. `--if-needed` cannot be combined with `--to`, and it fails closed: an unresolvable active account or a usage-fetch error exits 1 without writing anything.
 
 `aistat autoswitch install|uninstall|status` (macOS only) manages a launchd agent that runs `switch --if-needed --notify` on a timer (`StartInterval`, default 300s): `install` writes the thresholds to the env file above and loads the agent, `uninstall` unloads it and removes the plist (keeping the thresholds file), `status` reports installed/loaded state, interval, and effective thresholds. On Linux, wire the equivalent cron or systemd timer yourself around `aistat switch --if-needed --notify` (notifications no-op off darwin).
 
