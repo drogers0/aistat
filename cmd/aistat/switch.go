@@ -196,12 +196,14 @@ const (
 
 const shortKey = "five_hour"
 
-// longKeys are the sustained-ceiling windows used by the exhaustion gate and the
-// sustained-headroom tiebreak. Model-specific (seven_day_sonnet) and unknown
-// (window_<N>s, code_review_*) windows are intentionally excluded — they are
-// informational only. longKeys is a superset: Claude emits seven_day, Codex
-// emits seven_day or thirty_day; absent keys are simply skipped.
-var longKeys = []string{"seven_day", "thirty_day"}
+// longKeys are the sustained-ceiling windows used by the exhaustion gate, the
+// sustained-headroom tiebreak, and --if-needed's weekly trigger. seven_day_fable
+// is the model-scoped weekly for the primary working model (Claude Code's
+// default) — an exhausted Fable budget makes an account effectively spent for
+// day-to-day work, so it deliberately participates. Other model-specific
+// (seven_day_sonnet) and unknown (window_<N>s, code_review_*) windows stay
+// informational only. longKeys is a superset: absent keys are simply skipped.
+var longKeys = []string{"seven_day", "thirty_day", "seven_day_fable"}
 
 // longRemaining is the binding (minimum) RemainingPercent across present long
 // windows, or 100 when none are present (no sustained constraint).
