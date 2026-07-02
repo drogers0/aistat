@@ -21,6 +21,8 @@ func TestReadEnvFile(t *testing.T) {
 			map[string]string{"AISTAT_IF_ABOVE_5H": "70"}, ""},
 		{"trims whitespace around key and value", strPtr("  AISTAT_IF_ABOVE_5H = 60 \n"),
 			map[string]string{"AISTAT_IF_ABOVE_5H": "60"}, ""},
+		{"empty value is a present entry", strPtr("AISTAT_IF_ABOVE_5H=\n"),
+			map[string]string{"AISTAT_IF_ABOVE_5H": ""}, ""},
 		{"malformed line names file and line", strPtr("AISTAT_IF_ABOVE_5H=85\nnonsense\n"),
 			nil, ":2: malformed line (want KEY=VALUE)"},
 		{"line starting with = is malformed", strPtr("=85\n"), nil, ":1: malformed line (want KEY=VALUE)"},
@@ -69,6 +71,20 @@ func TestWriteEnvFile(t *testing.T) {
 		}
 		if vals[EnvFiveHour] != "85" || vals[EnvWeekly] != "off" {
 			t.Errorf("roundtrip = %v, want 5h=85 weekly=off", vals)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o644 {
+			t.Errorf("file mode: got %04o, want 0644", got)
+		}
+		dirInfo, err := os.Stat(filepath.Dir(path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := dirInfo.Mode().Perm(); got != 0o700 {
+			t.Errorf("parent dir mode: got %04o, want 0700", got)
 		}
 	})
 	t.Run("overwrites existing file", func(t *testing.T) {
