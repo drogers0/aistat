@@ -106,8 +106,13 @@ aistat usage                      # report usage across all providers/accounts
 aistat usage <provider>           # report a single provider (claude | codex | copilot)
 aistat switch                     # auto-switch claude to the account with the most headroom
 aistat switch --to <email|uuid>   # switch to a specific stored claude account
+aistat switch --if-needed         # only switch when the active account is past a threshold (see below)
 aistat accounts list              # list stored claude accounts
 aistat accounts remove <id>       # remove a stored claude account (email substring or uuid prefix)
+
+aistat autoswitch install         # run `switch --if-needed --notify` on a launchd timer (macOS)
+aistat autoswitch uninstall       # stop the timer (thresholds kept)
+aistat autoswitch status          # show installed/loaded state, interval, effective thresholds
 ```
 
 Flags: `-h`/`--human` for text rendering (affects `usage` only), `--refresh` to bypass the per-account Claude usage cache (~90 s TTL, affects `usage` only), `--debug` for per-request diagnostics on stderr, `--version` and `--help` for the obvious.
@@ -129,6 +134,11 @@ Whichever account is active when you call `aistat` gets stored automatically. Af
 
 Auto-pick buckets candidates by 5% (so 87% and 89% are equivalent) and breaks ties by most-recent use. It optimizes **relative headroom**, not "has enough quota for the workload you're about to start" — for nuanced cases, pass `--to` explicitly.
 
+### Conditional switching (`--if-needed`) and `aistat autoswitch`
+
+`aistat switch --if-needed` only switches when the active account's usage crosses a threshold — otherwise it prints `no switch needed (five_hour at 42%)` and exits 0. Thresholds: `AISTAT_IF_ABOVE_5H` (default 85) for the 5-hour window and `AISTAT_IF_ABOVE_WEEKLY` (default 95) for the binding long window (`seven_day`/`thirty_day`); either accepts `1`-`100` or `off` to disable that window. Resolution order per run: process env > `~/.config/aistat/autoswitch.env` > defaults, so the env file lets a scheduled run retune without touching a shell profile. Add `--notify` for a desktop notification (macOS) on an actual switch or on a threshold hit with no better account available. `--if-needed` cannot be combined with `--to`, and it fails closed: an unresolvable active account or a usage-fetch error exits 1 without writing anything.
+
+`aistat autoswitch install|uninstall|status` (macOS only) manages a launchd agent that runs `switch --if-needed --notify` on a timer (`StartInterval`, default 300s): `install` writes the thresholds to the env file above and loads the agent, `uninstall` unloads it and removes the plist (keeping the thresholds file), `status` reports installed/loaded state, interval, and effective thresholds. On Linux, wire the equivalent cron or systemd timer yourself around `aistat switch --if-needed --notify` (notifications no-op off darwin).
 
 > [!NOTE]
 > Multi-account support is currently Claude-only — Codex and Copilot ride on whatever single-account credential their upstream CLI writes.
