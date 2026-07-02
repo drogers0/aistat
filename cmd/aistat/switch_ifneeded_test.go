@@ -240,6 +240,22 @@ func TestSwitchIfNeeded(t *testing.T) {
 			wantExit(t, r, 1)
 			wantErrOut(t, r, "usage fetch for active account failed")
 		}},
+		{"post-trigger candidate fetch error exits one", func(t *testing.T) {
+			clearThresholdEnv(t)
+			withEnvFilePath(t, filepath.Join(t.TempDir(), "absent.env"))
+			seedTwoAccounts(t)
+			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
+				return makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50}), nil
+			})
+			withSwitchClient(t, &stubSwitchClient{fetchErr: errors.New("network blip")})
+			written, _ := withWriteBlob(t)
+			r := runSwitchTest("claude", "--if-needed")
+			wantExit(t, r, 1)
+			wantErrOut(t, r, "auto-pick usage fetch failed")
+			if len(*written) != 0 {
+				t.Errorf("live blob written despite fetch error: %s", *written)
+			}
+		}},
 		{"if-needed with to is a usage error", func(t *testing.T) {
 			r := runSwitchTest("claude", "--if-needed", "--to", "work")
 			wantExit(t, r, 2)

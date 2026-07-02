@@ -55,6 +55,12 @@ func TestAutoswitch(t *testing.T) {
 			wantExit(t, r, 2)
 			wantErrOut(t, r, "autoswitch requires launchd (macOS); run `aistat switch --if-needed` from cron or a systemd timer instead")
 		}},
+		{"dispatch through run reaches autoswitch", func(t *testing.T) {
+			autoswitchSeams(t, "linux", nil)
+			r := runCLI("autoswitch", "install")
+			wantExit(t, r, 2)
+			wantErrOut(t, r, "autoswitch requires launchd (macOS)")
+		}},
 		{"unknown verb is a usage error", func(t *testing.T) {
 			autoswitchSeams(t, "darwin", nil)
 			r := runAutoswitchTest("frobnicate")

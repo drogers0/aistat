@@ -398,6 +398,14 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, opts swi
 		}
 	}
 
+	// In --if-needed mode the invocation is well-formed by the time provider
+	// work starts, so fetch/write failures are runtime failures (exit 1), not
+	// usage errors (exit 2) — the documented contract for timer-driven polls.
+	failCode := int(orchestrate.StatusUsageError)
+	if opts.ifNeeded {
+		failCode = int(orchestrate.StatusAnyFailed)
+	}
+
 	var target accounts.Account
 
 	if toArg != "" {
@@ -458,12 +466,12 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, opts swi
 		candidates, fetchErr := h.client.FetchForSwitch(ctx)
 		if fetchErr != nil {
 			fmt.Fprintf(stderr, "aistat: %s: auto-pick usage fetch failed: %s\n", h.id, fetchErr)
-			return int(orchestrate.StatusUsageError)
+			return failCode
 		}
 
 		if len(candidates) == 0 {
 			fmt.Fprintln(stderr, "auto-pick failed: no accounts produced usable usage data; try `aistat switch --to <email>`")
-			return int(orchestrate.StatusUsageError)
+			return failCode
 		}
 
 		// Rank candidates: non-exhausted ▸ more 5h headroom ▸ more weekly runway ▸ most recent.
@@ -498,7 +506,7 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, opts swi
 
 		if bestAcct == nil {
 			fmt.Fprintln(stderr, "auto-pick failed: no accounts produced usable usage data; try `aistat switch --to <email>`")
-			return int(orchestrate.StatusUsageError)
+			return failCode
 		}
 		target = *bestAcct
 	}
@@ -508,7 +516,7 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, opts swi
 	defer writeCancel()
 	if err := h.writeLiveBlob(writeCtx, []byte(target.RawBlob)); err != nil {
 		fmt.Fprintf(stderr, "aistat: %s: write to live credential failed: %s\n", h.id, err)
-		return int(orchestrate.StatusUsageError)
+		return failCode
 	}
 
 	// Post-write reconcile so the store's LastSeenAt reflects the new active.
