@@ -273,8 +273,9 @@ func (c *Client) fetchLimitsFresh(ctx context.Context, accessToken string) (map[
 	// regardless of which window the API marks active. The key derives from
 	// scope.model.display_name because scope.model.id is null in today's API
 	// responses; if Anthropic renames a model the derived key changes silently
-	// and longKeys consumers stop matching — accepted, revisit when model.id is
-	// populated. Top-level keys win on collision since both can describe the
+	// and its render label in internal/render/text.go stops matching — accepted
+	// (these windows are informational-only), revisit when model.id is populated.
+	// Top-level keys win on collision since both can describe the
 	// same window during the migration period. Unlike the whitelist loop above,
 	// a malformed array or an unparseable resets_at is skipped rather than
 	// failing the response: these entries are additive/informational-plus and
