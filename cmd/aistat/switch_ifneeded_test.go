@@ -43,8 +43,8 @@ func TestTriggerReason(t *testing.T) {
 			th(85, 95, false, false), "seven_day at 95%", true},
 		{"thirty_day is the binding long window", map[string]float64{"five_hour": 60, "seven_day": 50, "thirty_day": 3},
 			th(85, 95, false, false), "thirty_day at 97%", true},
-		{"fable weekly is the binding long window", map[string]float64{"five_hour": 60, "seven_day": 50, "seven_day_fable": 4},
-			th(85, 95, false, false), "seven_day_fable at 96%", true},
+		{"fable weekly does not trigger", map[string]float64{"five_hour": 60, "seven_day": 50, "seven_day_fable": 4},
+			th(85, 95, false, false), "", false},
 		{"5h checked before weekly", map[string]float64{"five_hour": 10, "seven_day": 2},
 			th(85, 95, false, false), "five_hour at 90%", true},
 		{"missing five_hour window cannot trigger 5h", map[string]float64{"seven_day": 50},
@@ -77,7 +77,7 @@ func TestUsageSummary(t *testing.T) {
 		{"prefers five_hour", map[string]float64{"five_hour": 58, "seven_day": 10}, "five_hour at 42%"},
 		{"falls back to binding long window", map[string]float64{"seven_day": 70, "thirty_day": 20}, "thirty_day at 80%"},
 		{"tie resolves to first long key", map[string]float64{"seven_day": 50, "thirty_day": 50}, "seven_day at 50%"},
-		{"fable can be the binding fallback", map[string]float64{"seven_day": 70, "seven_day_fable": 20}, "seven_day_fable at 80%"},
+		{"fable is not the binding fallback", map[string]float64{"seven_day": 70, "seven_day_fable": 20}, "seven_day at 30%"},
 		{"no windows", map[string]float64{}, "no usage windows"},
 	}
 	for _, tt := range tests {
@@ -479,24 +479,20 @@ func TestSwitchIfNeeded(t *testing.T) {
 				t.Errorf("unexpected notifications without --notify: %v", *notes)
 			}
 		}},
-		{"fable weekly over threshold switches", func(t *testing.T) {
+		{"fable weekly alone does not switch", func(t *testing.T) {
 			clearThresholdEnv(t)
 			withEnvFilePath(t, filepath.Join(t.TempDir(), "absent.env"))
 			seedTwoAccounts(t)
+			withSwitchClient(t, &stubSwitchClient{})
 			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
 				return makeLimitsFull(map[string]float64{"five_hour": 60, "seven_day": 50, "seven_day_fable": 3}), nil
 			})
-			withSwitchClient(t, &stubSwitchClient{fetchResults: []providers.AccountResult{
-				{UUID: "uuid-work", Email: "work@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 60, "seven_day": 50, "seven_day_fable": 3})},
-				{UUID: "uuid-personal", Email: "personal@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 90, "seven_day": 80, "seven_day_fable": 85})},
-			}})
-			_, _ = withWriteBlob(t)
-			notes := withNotifyCapture(t)
-			r := runSwitchTest("claude", "--if-needed", "--notify")
+			written, _ := withWriteBlob(t)
+			r := runSwitchTest("claude", "--if-needed")
 			wantExit(t, r, 0)
-			wantOut(t, r, "switched to personal@example.com")
-			if len(*notes) != 1 || (*notes)[0] != "Claude: switched to personal@example.com (seven_day_fable at 97%)" {
-				t.Errorf("notifications = %v", *notes)
+			wantOut(t, r, "no switch needed")
+			if len(*written) != 0 {
+				t.Errorf("live blob written despite fable not being a trigger: %s", *written)
 			}
 		}},
 	}
