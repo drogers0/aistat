@@ -14,7 +14,7 @@
 
 ---
 
-A command line utility that reads your **Claude**, **Codex**, and **Copilot** usage limits from the same credential stores those tools already use — and switches between stored accounts without a browser round-trip.
+A command line utility that reads your **Claude**, **Codex**, and **Copilot** usage limits from the same credential stores those tools already use — and switches between stored accounts without a browser round-trip. Model-scoped weekly windows (like `7-day fable` above) are shown for visibility whenever Anthropic's usage response scopes a limit to a specific model.
 
 ```console
 $ aistat -h
@@ -23,6 +23,7 @@ Claude usage
   - 5-hour: 92.0% (resets in 4h 53m)
   - 7-day: 71.0% (resets in 2d 5h)
   - 7-day sonnet: 58.0% (resets in 2d 5h)
+  - 7-day fable: 34.0% (resets in 2d 5h)
 - work@example.com [Max 20x]
   - 5-hour: 4.0% (resets in 4h 12m)
   - 7-day: 12.0% (resets in 5d 9h)
