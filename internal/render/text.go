@@ -87,7 +87,7 @@ func Text(w io.Writer, r providers.Report, requested []string) error {
 		}
 		sort.Strings(unknown)
 		for _, k := range unknown {
-			lines = append(lines, formatLimitLine(k, result.Limits[k]))
+			lines = append(lines, formatLimitLine(humanizeWindowKey(k), result.Limits[k]))
 		}
 		sections = append(sections, strings.Join(lines, "\n"))
 	}
@@ -138,10 +138,23 @@ func renderAccountsSection(title, providerID string, accts []providers.AccountRe
 		}
 		sort.Strings(unknownKeys)
 		for _, k := range unknownKeys {
-			lines = append(lines, "  "+formatLimitLine(k, ar.Limits[k]))
+			lines = append(lines, "  "+formatLimitLine(humanizeWindowKey(k), ar.Limits[k]))
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// humanizeWindowKey turns a model-scoped window key like "seven_day_fable" or
+// "seven_day_fable_5" into a readable "7-day fable" / "7-day fable 5" derived
+// straight from the key, so a model rename degrades gracefully instead of
+// surfacing a raw snake_case key. Keys without the seven_day_ model prefix are
+// returned unchanged (the unknown-key fallback keeps its raw label for them).
+func humanizeWindowKey(key string) string {
+	const p = "seven_day_"
+	if rest := strings.TrimPrefix(key, p); rest != key && rest != "" {
+		return "7-day " + strings.ReplaceAll(rest, "_", " ")
+	}
+	return key
 }
 
 func formatLimitLine(label string, l providers.Limit) string {

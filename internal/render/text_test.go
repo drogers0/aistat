@@ -147,6 +147,68 @@ func TestText(t *testing.T) {
 				t.Fatalf("got %q want %q", buf.String(), want)
 			}
 		}},
+		{"model-scoped fable window renders via generic humanizer", func(t *testing.T) {
+			// seven_day_fable has no hard-coded label; it falls into the unknown-key
+			// path and must render as "7-day fable" via humanizeWindowKey, not the
+			// raw snake_case key.
+			r := providers.Report{
+				Providers: map[string]providers.ProviderResult{
+					"claude": {Limits: map[string]providers.Limit{
+						"five_hour":        mkLimit(2, 4*3600+53*60),
+						"seven_day":        mkLimit(21, 2*86400+5*3600),
+						"seven_day_sonnet": mkLimit(0, 2*86400+5*3600),
+						"seven_day_fable":  mkLimit(44, 1*86400+10*3600),
+					}},
+				},
+			}
+			var buf bytes.Buffer
+			_ = Text(&buf, r, []string{"claude"})
+			want := "Claude usage\n" +
+				"- 5-hour: 2.0% (resets in 4h 53m)\n" +
+				"- 7-day: 21.0% (resets in 2d 5h)\n" +
+				"- 7-day sonnet: 0.0% (resets in 2d 5h)\n" +
+				"- 7-day fable: 44.0% (resets in 1d 10h)\n"
+			if buf.String() != want {
+				t.Fatalf("got %q want %q", buf.String(), want)
+			}
+		}},
+		{"model rename degrades gracefully via humanizer", func(t *testing.T) {
+			// If Anthropic renames "Fable" -> "Fable 5", the parser emits
+			// seven_day_fable_5, which has no per-model label. It must still
+			// render legibly as "7-day fable 5" rather than the raw key.
+			r := providers.Report{
+				Providers: map[string]providers.ProviderResult{
+					"claude": {Limits: map[string]providers.Limit{
+						"five_hour":         mkLimit(2, 3600),
+						"seven_day_fable_5": mkLimit(15, 7200),
+					}},
+				},
+			}
+			var buf bytes.Buffer
+			_ = Text(&buf, r, []string{"claude"})
+			want := "Claude usage\n- 5-hour: 2.0% (resets in 1h 0m)\n- 7-day fable 5: 15.0% (resets in 2h 0m)\n"
+			if buf.String() != want {
+				t.Fatalf("got %q want %q", buf.String(), want)
+			}
+		}},
+		{"genuinely unknown non-model key keeps raw label", func(t *testing.T) {
+			// A key that doesn't have the seven_day_ model prefix must be left
+			// untouched by the humanizer and still render with its raw key.
+			r := providers.Report{
+				Providers: map[string]providers.ProviderResult{
+					"claude": {Limits: map[string]providers.Limit{
+						"five_hour":    mkLimit(2, 3600),
+						"window_1234s": mkLimit(9, 60),
+					}},
+				},
+			}
+			var buf bytes.Buffer
+			_ = Text(&buf, r, []string{"claude"})
+			want := "Claude usage\n- 5-hour: 2.0% (resets in 1h 0m)\n- window_1234s: 9.0% (resets in 1m)\n"
+			if buf.String() != want {
+				t.Fatalf("got %q want %q", buf.String(), want)
+			}
+		}},
 		{"title case", func(t *testing.T) {
 			// Sanity check the capitalization helper isn't broken for all three.
 			r := providers.Report{
@@ -365,6 +427,31 @@ func TestText(t *testing.T) {
 			var buf bytes.Buffer
 			_ = Text(&buf, r, []string{"codex"})
 			want := "Codex usage\n- (live Codex account) (active)\n  - 5-hour: 50.0% (resets in 30m)\n"
+			if buf.String() != want {
+				t.Fatalf("got %q want %q", buf.String(), want)
+			}
+		}},
+		{"claude accounts model-scoped fable window via humanizer", func(t *testing.T) {
+			// Nested accounts form must also route seven_day_fable through the
+			// generic humanizer (unknown-key fallback), not a hard-coded label.
+			r := providers.Report{
+				Providers: map[string]providers.ProviderResult{
+					"claude": {Accounts: []providers.AccountResult{
+						{
+							Email:  "me@example.com",
+							Plan:   "default_claude_max_5x",
+							Active: true,
+							Limits: map[string]providers.Limit{
+								"five_hour":       mkLimit(2, 4*3600+53*60),
+								"seven_day_fable": mkLimit(44, 1*86400+10*3600),
+							},
+						},
+					}},
+				},
+			}
+			var buf bytes.Buffer
+			_ = Text(&buf, r, []string{"claude"})
+			want := "Claude usage\n- me@example.com (active) [Max 5x]\n  - 5-hour: 2.0% (resets in 4h 53m)\n  - 7-day fable: 44.0% (resets in 1d 10h)\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
 			}

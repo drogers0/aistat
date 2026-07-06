@@ -253,10 +253,10 @@ func TestFetch_golden(t *testing.T) {
 				t.Fatalf("expected 1 account row, got %d", len(out.Accounts))
 			}
 			acctLimits := out.Accounts[0].Limits
-			if len(acctLimits) != 3 {
-				t.Fatalf("expected 3 limits, got %d: %v", len(acctLimits), keys(acctLimits))
+			if len(acctLimits) != 4 {
+				t.Fatalf("expected 4 limits, got %d: %v", len(acctLimits), keys(acctLimits))
 			}
-			for _, want := range []string{"five_hour", "seven_day", "seven_day_sonnet"} {
+			for _, want := range []string{"five_hour", "seven_day", "seven_day_sonnet", "seven_day_fable"} {
 				if _, ok := acctLimits[want]; !ok {
 					t.Errorf("missing %s", want)
 				}
@@ -279,6 +279,17 @@ func TestFetch_golden(t *testing.T) {
 			wantTime, _ := time.Parse(time.RFC3339, "2026-05-26T22:00:00Z")
 			if !fh.ResetsAt.Equal(wantTime) {
 				t.Errorf("resets_at = %v, want %v", fh.ResetsAt, wantTime)
+			}
+			fable := acctLimits["seven_day_fable"]
+			if fable.UsedPercent != 44.0 {
+				t.Errorf("seven_day_fable used_percent = %v, want 44.0", fable.UsedPercent)
+			}
+			if fable.RemainingPercent != 56.0 {
+				t.Errorf("seven_day_fable remaining_percent = %v, want 56.0", fable.RemainingPercent)
+			}
+			wantFableTime, _ := time.Parse(time.RFC3339, "2026-07-04T10:00:00Z")
+			if !fable.ResetsAt.Equal(wantFableTime) {
+				t.Errorf("seven_day_fable resets_at = %v, want %v", fable.ResetsAt, wantFableTime)
 			}
 			if !out.Accounts[0].Active {
 				t.Error("single account row should be active")
@@ -372,6 +383,213 @@ func TestFetch_parse(t *testing.T) {
 			}
 			if got := limits["five_hour"].UsedPercent; got != 10.0 {
 				t.Errorf("five_hour used_percent = %v, want 10.0", got)
+			}
+		}},
+		{"limits array: session and weekly_all skipped, only weekly_scoped surfaces", func(t *testing.T) {
+			body := []byte(`{"five_hour":{"utilization":10.0,"resets_at":"2027-01-01T00:00:00+00:00"},"limits":[` +
+				`{"kind":"session","percent":62,"resets_at":"2027-01-01T00:00:00+00:00","scope":{"model":{"display_name":"SessionModel"}}},` +
+				`{"kind":"weekly_all","percent":33,"resets_at":"2027-01-01T00:00:00+00:00","scope":{"model":{"display_name":"WeeklyAllModel"}}},` +
+				`{"kind":"weekly_scoped","percent":44,"resets_at":"2027-01-01T00:00:00+00:00","scope":{"model":{"display_name":"Testmodel"}}}` +
+				`]}`)
+			live := makeCred("tok-live", "ref", 0)
+			store := testutil.MemStore(t, makeAccount("u1", "a@b.com", "tok-live", "ref", 0))
+
+			usageSrv := testutil.NewStubServer(t, body, 200, nil)
+			profileSrv := testutil.RejectServer(t, "profile")
+			refreshSrv := testutil.RejectServer(t, "refresh")
+
+			out, err := buildClient(t, usageSrv, profileSrv, refreshSrv, live, store, nil, nil).Fetch(context.Background())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			limits := out.Accounts[0].Limits
+			if got := limits["seven_day_testmodel"].UsedPercent; got != 44.0 {
+				t.Errorf("seven_day_testmodel used_percent = %v, want 44.0", got)
+			}
+			if _, ok := limits["seven_day_sessionmodel"]; ok {
+				t.Error("session kind must not surface a window")
+			}
+			if _, ok := limits["seven_day_weeklyallmodel"]; ok {
+				t.Error("weekly_all kind must not surface a window")
+			}
+		}},
+		{"limits array: display name with space becomes underscore-joined key", func(t *testing.T) {
+			body := []byte(`{"five_hour":{"utilization":10.0,"resets_at":"2027-01-01T00:00:00+00:00"},"limits":[` +
+				`{"kind":"weekly_scoped","percent":20,"resets_at":"2027-01-01T00:00:00+00:00","scope":{"model":{"display_name":"Fable Turbo"}}}` +
+				`]}`)
+			live := makeCred("tok-live", "ref", 0)
+			store := testutil.MemStore(t, makeAccount("u1", "a@b.com", "tok-live", "ref", 0))
+
+			usageSrv := testutil.NewStubServer(t, body, 200, nil)
+			profileSrv := testutil.RejectServer(t, "profile")
+			refreshSrv := testutil.RejectServer(t, "refresh")
+
+			out, err := buildClient(t, usageSrv, profileSrv, refreshSrv, live, store, nil, nil).Fetch(context.Background())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if _, ok := out.Accounts[0].Limits["seven_day_fable_turbo"]; !ok {
+				t.Error("expected seven_day_fable_turbo window from display_name \"Fable Turbo\"")
+			}
+		}},
+		{"limits array: punctuation-heavy display name slugged", func(t *testing.T) {
+			body := []byte(`{"five_hour":{"utilization":10.0,"resets_at":"2027-01-01T00:00:00+00:00"},"limits":[` +
+				`{"kind":"weekly_scoped","percent":25,"resets_at":"2027-01-01T00:00:00+00:00","scope":{"model":{"display_name":"--Fable 2.0 (Preview)--"}}}` +
+				`]}`)
+			live := makeCred("tok-live", "ref", 0)
+			store := testutil.MemStore(t, makeAccount("u1", "a@b.com", "tok-live", "ref", 0))
+
+			usageSrv := testutil.NewStubServer(t, body, 200, nil)
+			profileSrv := testutil.RejectServer(t, "profile")
+			refreshSrv := testutil.RejectServer(t, "refresh")
+
+			out, err := buildClient(t, usageSrv, profileSrv, refreshSrv, live, store, nil, nil).Fetch(context.Background())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			limits := out.Accounts[0].Limits
+			if _, ok := limits["seven_day_fable_2_0_preview"]; !ok {
+				t.Errorf("expected seven_day_fable_2_0_preview from display_name \"--Fable 2.0 (Preview)--\", got: %v", keys(limits))
+			}
+		}},
+		{"limits array: same-loop duplicate slugs keep the first entry", func(t *testing.T) {
+			body := []byte(`{"five_hour":{"utilization":10.0,"resets_at":"2027-01-01T00:00:00+00:00"},"limits":[` +
+				`{"kind":"weekly_scoped","percent":40,"resets_at":"2027-01-01T00:00:00+00:00","scope":{"model":{"display_name":"Fable"}}},` +
+				`{"kind":"weekly_scoped","percent":80,"resets_at":"2027-01-02T00:00:00+00:00","scope":{"model":{"display_name":"fable"}}}` +
+				`]}`)
+			live := makeCred("tok-live", "ref", 0)
+			store := testutil.MemStore(t, makeAccount("u1", "a@b.com", "tok-live", "ref", 0))
+
+			usageSrv := testutil.NewStubServer(t, body, 200, nil)
+			profileSrv := testutil.RejectServer(t, "profile")
+			refreshSrv := testutil.RejectServer(t, "refresh")
+
+			out, err := buildClient(t, usageSrv, profileSrv, refreshSrv, live, store, nil, nil).Fetch(context.Background())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if e := out.Accounts[0].Error; e != "" {
+				t.Fatalf("same-loop slug collision must not produce a per-account error: %q", e)
+			}
+			limits := out.Accounts[0].Limits
+			if len(limits) != 2 {
+				t.Fatalf("expected exactly five_hour + one seven_day_fable, got %d: %v", len(limits), keys(limits))
+			}
+			if got := limits["seven_day_fable"].UsedPercent; got != 40.0 {
+				t.Errorf("seven_day_fable used_percent = %v, want 40.0 (first entry wins)", got)
+			}
+		}},
+		{"limits array: weekly_scoped with null resets_at skipped", func(t *testing.T) {
+			body := []byte(`{"five_hour":{"utilization":10.0,"resets_at":"2027-01-01T00:00:00+00:00"},"limits":[` +
+				`{"kind":"weekly_scoped","percent":20,"resets_at":null,"scope":{"model":{"display_name":"NullReset"}}}` +
+				`]}`)
+			live := makeCred("tok-live", "ref", 0)
+			store := testutil.MemStore(t, makeAccount("u1", "a@b.com", "tok-live", "ref", 0))
+
+			usageSrv := testutil.NewStubServer(t, body, 200, nil)
+			profileSrv := testutil.RejectServer(t, "profile")
+			refreshSrv := testutil.RejectServer(t, "refresh")
+
+			out, err := buildClient(t, usageSrv, profileSrv, refreshSrv, live, store, nil, nil).Fetch(context.Background())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if _, ok := out.Accounts[0].Limits["seven_day_nullreset"]; ok {
+				t.Error("weekly_scoped with null resets_at should be skipped")
+			}
+		}},
+		{"limits array: weekly_scoped with null scope, null model, or empty display_name skipped", func(t *testing.T) {
+			body := []byte(`{"five_hour":{"utilization":10.0,"resets_at":"2027-01-01T00:00:00+00:00"},"limits":[` +
+				`{"kind":"weekly_scoped","percent":20,"resets_at":"2027-01-01T00:00:00+00:00","scope":null},` +
+				`{"kind":"weekly_scoped","percent":21,"resets_at":"2027-01-01T00:00:00+00:00","scope":{"model":null}},` +
+				`{"kind":"weekly_scoped","percent":22,"resets_at":"2027-01-01T00:00:00+00:00","scope":{"model":{"display_name":""}}}` +
+				`]}`)
+			live := makeCred("tok-live", "ref", 0)
+			store := testutil.MemStore(t, makeAccount("u1", "a@b.com", "tok-live", "ref", 0))
+
+			usageSrv := testutil.NewStubServer(t, body, 200, nil)
+			profileSrv := testutil.RejectServer(t, "profile")
+			refreshSrv := testutil.RejectServer(t, "refresh")
+
+			out, err := buildClient(t, usageSrv, profileSrv, refreshSrv, live, store, nil, nil).Fetch(context.Background())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			limits := out.Accounts[0].Limits
+			if len(limits) != 1 {
+				t.Fatalf("expected only five_hour to survive, got %d: %v", len(limits), keys(limits))
+			}
+			if _, ok := limits["five_hour"]; !ok {
+				t.Error("five_hour must still be present")
+			}
+		}},
+		{"limits array: top-level seven_day_sonnet wins over weekly_scoped collision", func(t *testing.T) {
+			body := []byte(`{"five_hour":{"utilization":10.0,"resets_at":"2027-01-01T00:00:00+00:00"},` +
+				`"seven_day_sonnet":{"utilization":15.0,"resets_at":"2027-01-02T00:00:00+00:00"},` +
+				`"limits":[{"kind":"weekly_scoped","percent":90,"resets_at":"2027-01-03T00:00:00+00:00","scope":{"model":{"display_name":"Sonnet"}}}]}`)
+			live := makeCred("tok-live", "ref", 0)
+			store := testutil.MemStore(t, makeAccount("u1", "a@b.com", "tok-live", "ref", 0))
+
+			usageSrv := testutil.NewStubServer(t, body, 200, nil)
+			profileSrv := testutil.RejectServer(t, "profile")
+			refreshSrv := testutil.RejectServer(t, "refresh")
+
+			out, err := buildClient(t, usageSrv, profileSrv, refreshSrv, live, store, nil, nil).Fetch(context.Background())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got := out.Accounts[0].Limits["seven_day_sonnet"].UsedPercent; got != 15.0 {
+				t.Errorf("seven_day_sonnet used_percent = %v, want 15.0 (top-level value must win)", got)
+			}
+		}},
+		{"limits array: malformed (object instead of array) tolerated", func(t *testing.T) {
+			body := []byte(`{"five_hour":{"utilization":10.0,"resets_at":"2027-01-01T00:00:00+00:00"},"limits":{"foo":"bar"}}`)
+			live := makeCred("tok-live", "ref", 0)
+			store := testutil.MemStore(t, makeAccount("u1", "a@b.com", "tok-live", "ref", 0))
+
+			usageSrv := testutil.NewStubServer(t, body, 200, nil)
+			profileSrv := testutil.RejectServer(t, "profile")
+			refreshSrv := testutil.RejectServer(t, "refresh")
+
+			out, err := buildClient(t, usageSrv, profileSrv, refreshSrv, live, store, nil, nil).Fetch(context.Background())
+			if err != nil {
+				t.Fatalf("malformed limits array must not fail the fetch: %v", err)
+			}
+			if e := out.Accounts[0].Error; e != "" {
+				t.Fatalf("malformed limits array must not produce a per-account error: %q", e)
+			}
+			if _, ok := out.Accounts[0].Limits["five_hour"]; !ok {
+				t.Error("five_hour must still be parsed despite the malformed limits array")
+			}
+		}},
+		{"limits array: unparseable resets_at in one weekly_scoped entry skips only that entry", func(t *testing.T) {
+			body := []byte(`{"five_hour":{"utilization":10.0,"resets_at":"2027-01-01T00:00:00+00:00"},"limits":[` +
+				`{"kind":"weekly_scoped","percent":20,"resets_at":"not-a-timestamp","scope":{"model":{"display_name":"Bad"}}},` +
+				`{"kind":"weekly_scoped","percent":30,"resets_at":"2027-01-05T00:00:00+00:00","scope":{"model":{"display_name":"Good"}}}` +
+				`]}`)
+			live := makeCred("tok-live", "ref", 0)
+			store := testutil.MemStore(t, makeAccount("u1", "a@b.com", "tok-live", "ref", 0))
+
+			usageSrv := testutil.NewStubServer(t, body, 200, nil)
+			profileSrv := testutil.RejectServer(t, "profile")
+			refreshSrv := testutil.RejectServer(t, "refresh")
+
+			out, err := buildClient(t, usageSrv, profileSrv, refreshSrv, live, store, nil, nil).Fetch(context.Background())
+			if err != nil {
+				t.Fatalf("unparseable resets_at in a scoped entry must not fail the fetch: %v", err)
+			}
+			if e := out.Accounts[0].Error; e != "" {
+				t.Fatalf("unparseable resets_at in a scoped entry must not produce a per-account error: %q", e)
+			}
+			limits := out.Accounts[0].Limits
+			if _, ok := limits["seven_day_bad"]; ok {
+				t.Error("entry with unparseable resets_at must be skipped")
+			}
+			if _, ok := limits["seven_day_good"]; !ok {
+				t.Error("other valid entries must still surface")
+			}
+			if _, ok := limits["five_hour"]; !ok {
+				t.Error("top-level windows must be unaffected")
 			}
 		}},
 		{"bad resets_at", func(t *testing.T) {
