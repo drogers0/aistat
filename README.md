@@ -66,7 +66,9 @@ Three runnable examples in [`examples/`](examples/) put the pattern to work:
 curl -fsSL https://raw.githubusercontent.com/drogers0/aistat/main/install.sh | sh
 ```
 
-Prebuilt releases ship for **macOS** (arm64, amd64) and **Linux** (amd64, arm64). Windows may work but isn't currently supported.
+Prebuilt releases ship for **macOS** (arm64, amd64), **Linux** (amd64, arm64), and **Windows** (amd64, arm64).
+
+**Windows:** the `curl | sh` line above needs a POSIX shell (Git Bash / WSL). For native PowerShell, download the `.zip` from the [Releases page](https://github.com/drogers0/aistat/releases), extract `aistat.exe`, and put it on your `PATH` — or `go install github.com/drogers0/aistat/v2/cmd/aistat@latest` with Go 1.22+. On Windows, aistat reads Claude credentials from `%USERPROFILE%\.claude\.credentials.json`, Codex from `%USERPROFILE%\.codex\auth.json`, and Copilot via the `gh` CLI, and stores multi-account data under `%USERPROFILE%\.config\aistat\`.
 
 <details>
 <summary>Other install options</summary>
@@ -95,7 +97,7 @@ curl -fsSL https://raw.githubusercontent.com/drogers0/aistat/main/install.sh | s
 go install github.com/drogers0/aistat/v2/cmd/aistat@latest
 ```
 
-**Manual download:** grab a tarball from the [Releases page](https://github.com/drogers0/aistat/releases) and place `aistat` on your PATH.
+**Manual download:** grab a tarball (`.zip` on Windows) from the [Releases page](https://github.com/drogers0/aistat/releases) and place `aistat` on your PATH.
 
 </details>
 

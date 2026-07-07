@@ -20,6 +20,7 @@ import (
 	"github.com/drogers0/aistat/v2/internal/httpx"
 	"github.com/drogers0/aistat/v2/internal/providers"
 	"github.com/drogers0/aistat/v2/internal/providers/usagecache"
+	"github.com/drogers0/aistat/v2/internal/testenv"
 	"github.com/drogers0/aistat/v2/internal/testutil"
 )
 
@@ -89,7 +90,7 @@ func refreshSuccessBody(accessToken, refreshToken string) []byte {
 // refresh) uses its own doer so each can point at a separate test server.
 // If warnBuf is nil, warns are discarded. If nowFn is nil, testNow is used.
 //
-// Cache isolation: sets HOME (and clears XDG_CACHE_HOME) to a per-test
+// Cache isolation: redirects the user home to a per-test
 // TempDir so no test touches the developer's real cache directory.
 func buildClient(
 	t *testing.T,
@@ -104,8 +105,7 @@ func buildClient(
 	t.Helper()
 
 	// Isolate cache I/O from the developer's real cache directory.
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("XDG_CACHE_HOME", "")
+	testenv.RedirectHome(t, t.TempDir())
 
 	usageDoer := httpx.NewDoer(usageSrv.Client(), "aistat-test/0", "claude",
 		map[string]string{"Anthropic-Beta": betaHeader}, nil)
@@ -1546,8 +1546,7 @@ func TestFetch_cache(t *testing.T) {
 			store := testutil.MemStore(t, makeAccount("uuid-a", "a@example.com", "tok-a", "ref-a", 0))
 
 			// Redirect cache to an isolated dir before constructing the cache.
-			t.Setenv("HOME", t.TempDir())
-			t.Setenv("XDG_CACHE_HOME", "")
+			testenv.RedirectHome(t, t.TempDir())
 
 			nowFn := func() time.Time { return testNow }
 
@@ -1668,8 +1667,7 @@ func TestNew(t *testing.T) {
 			// WithCacheBypass(true) skips the read path (usage server IS hit) but
 			// still writes through on success (D8 contract).
 			// Verify WithCacheBypass actually wires the field through New.
-			t.Setenv("HOME", t.TempDir())
-			t.Setenv("XDG_CACHE_HOME", "")
+			testenv.RedirectHome(t, t.TempDir())
 			optClient := New(nil, "aistat-test/0", WithCacheBypass(true))
 			if !optClient.cacheBypass {
 				t.Fatal("WithCacheBypass(true) did not set cacheBypass on Client")

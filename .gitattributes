@@ -1,0 +1,5 @@
+# Normalize line endings to LF on checkout across all platforms. Prevents git
+# autocrlf on Windows from rewriting .go source or .golden fixtures to CRLF,
+# which would break \n-sensitive string literals and byte-for-byte golden
+# comparisons in internal/render.
+* text=auto eol=lf

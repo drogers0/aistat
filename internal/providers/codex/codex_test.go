@@ -20,6 +20,7 @@ import (
 	"github.com/drogers0/aistat/v2/internal/httpx"
 	"github.com/drogers0/aistat/v2/internal/providers"
 	"github.com/drogers0/aistat/v2/internal/providers/usagecache"
+	"github.com/drogers0/aistat/v2/internal/testenv"
 	"github.com/drogers0/aistat/v2/internal/testutil"
 )
 
@@ -100,7 +101,7 @@ func refreshSuccessBody(accessToken, refreshToken string) []byte {
 // default to empty MemoryStore; lookupID is nil to default to cred.ParseCodexIDToken;
 // warnBuf is nil to discard warns; nowFn is nil to use testNow.
 //
-// Cache isolation: sets HOME (and clears XDG_CACHE_HOME) to a per-test TempDir.
+// Cache isolation: redirects the user home to a per-test TempDir.
 func buildClient(
 	t *testing.T,
 	usageSrv *httptest.Server,
@@ -114,8 +115,7 @@ func buildClient(
 	t.Helper()
 
 	// Isolate cache I/O from the developer's real cache directory.
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("XDG_CACHE_HOME", "")
+	testenv.RedirectHome(t, t.TempDir())
 
 	usageDoer := httpx.NewDoer(usageSrv.Client(), "aistat-test/0", "codex", nil, nil)
 
@@ -1074,8 +1074,7 @@ func TestFetch_token_rotation(t *testing.T) {
 
 // TestNew_WithCacheBypass verifies that WithCacheBypass sets the cacheBypass field.
 func TestNew_WithCacheBypass(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("XDG_CACHE_HOME", "")
+	testenv.RedirectHome(t, t.TempDir())
 	c := New(nil, "test/0", WithCacheBypass(true))
 	if !c.CacheBypassEnabled() {
 		t.Error("CacheBypassEnabled() = false, want true after WithCacheBypass(true)")
