@@ -62,22 +62,16 @@ Three runnable examples in [`examples/`](examples/) put the pattern to work:
 
 ## Installation
 
+Works on **macOS**, **Linux**, and **Windows** (Git Bash + WSL):
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/drogers0/aistat/main/install.sh | sh
 ```
 
-Prebuilt releases ship for **macOS** (arm64, amd64), **Linux** (amd64, arm64), and **Windows** (amd64, arm64).
-
-**Windows** — the `curl | sh` installer needs a POSIX shell, so pick by where you run it:
-
-- **Git Bash / MSYS:** run the `curl … | sh` line above — the installer detects Windows and installs `aistat.exe` (needs `unzip`, which ships with Git for Windows).
-- **PowerShell / cmd:** these have no `sh`, so the installer can't run. Download the `.zip` from the [Releases page](https://github.com/drogers0/aistat/releases), extract `aistat.exe`, and put it on your `PATH` — or `go install github.com/drogers0/aistat/v2/cmd/aistat@latest` with Go 1.22+.
-- **WSL:** the installer sees Linux and installs the **Linux** build, which reads WSL's Linux paths (`~/.claude`, …), *not* the Windows host's — use Git Bash or the `.zip` if you want the native Windows binary.
-
-On Windows, aistat reads Claude credentials from `%USERPROFILE%\.claude\.credentials.json`, Codex from `%USERPROFILE%\.codex\auth.json`, and Copilot via the `gh` CLI, and stores multi-account data under `%USERPROFILE%\.config\aistat\`.
-
 <details>
 <summary>Other install options</summary>
+
+**Manual download:** grab a tarball (`.zip` on Windows) from the [Releases page](https://github.com/drogers0/aistat/releases) and place `aistat` on your PATH.
 
 **Pin a specific version:**
 
@@ -102,8 +96,6 @@ curl -fsSL https://raw.githubusercontent.com/drogers0/aistat/main/install.sh | s
 ```bash
 go install github.com/drogers0/aistat/v2/cmd/aistat@latest
 ```
-
-**Manual download:** grab a tarball (`.zip` on Windows) from the [Releases page](https://github.com/drogers0/aistat/releases) and place `aistat` on your PATH.
 
 </details>
 
