@@ -1,4 +1,4 @@
-//go:build darwin || linux
+//go:build darwin || linux || windows
 
 // Package usagecache is a provider-neutral, per-UUID usage limit cache backed
 // by a single JSON file in $CACHE/aistat/usage/. It is used by provider
@@ -17,7 +17,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/drogers0/aistat/v2/internal/providers"
@@ -130,26 +129,6 @@ func disabledCache(provider string, nowFn func() time.Time, warnFn func(string),
 	}
 }
 
-// withLock opens the sentinel lock file (creating it mode 0600 if absent),
-// acquires the requested flock mode, calls fn, then releases the lock. The
-// lock sits on a separate sentinel file rather than the data file because
-// atomicWrite replaces the data file via rename — a flock on the data file's
-// open fd would travel with the orphaned inode after rename, letting a second
-// writer race ahead with stale state. The sentinel never gets renamed so the
-// lock anchors a stable serialization point.
-func (c *Cache) withLock(mode int, fn func() error) error {
-	f, err := os.OpenFile(c.lockPath, os.O_CREATE|os.O_RDWR, 0600)
-	if err != nil {
-		return fmt.Errorf("usage cache: open lock file: %w", err)
-	}
-	defer f.Close()
-	if err := syscall.Flock(int(f.Fd()), mode); err != nil {
-		return fmt.Errorf("usage cache: acquire lock: %w", err)
-	}
-	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:errcheck
-	return fn()
-}
-
 // atomicWrite marshals cf to JSON and atomically replaces c.path via a
 // temp-file-in-same-dir + rename, preserving mode 0600.
 func (c *Cache) atomicWrite(cf cacheFile) error {
@@ -196,7 +175,7 @@ func (c *Cache) GetWithAge(uuid string) (map[string]providers.Limit, time.Durati
 	var age time.Duration
 	var found bool
 
-	err := c.withLock(syscall.LOCK_SH, func() error {
+	err := c.withLock(false, func() error {
 		data, err := os.ReadFile(c.path)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
@@ -252,7 +231,7 @@ func (c *Cache) Put(uuid string, limits map[string]providers.Limit) {
 		return
 	}
 
-	err := c.withLock(syscall.LOCK_EX, func() error {
+	err := c.withLock(true, func() error {
 		var cf cacheFile
 		data, err := os.ReadFile(c.path)
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {

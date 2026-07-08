@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux || windows
 
 package accounts
 
@@ -8,18 +8,21 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
+
+	"github.com/drogers0/aistat/v2/internal/testenv"
 )
 
-func TestLinuxStore(t *testing.T) {
+func TestFileStore(t *testing.T) {
 	tests := []struct {
 		name string
 		run  func(t *testing.T)
 	}{
 		{"round trip", func(t *testing.T) {
 			home := t.TempDir()
-			t.Setenv("HOME", home)
+			testenv.RedirectHome(t, home)
 
 			store, err := OpenStore(ProviderClaude)
 			if err != nil {
@@ -53,8 +56,11 @@ func TestLinuxStore(t *testing.T) {
 			}
 		}},
 		{"file mode", func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("POSIX file modes are advisory on Windows (NTFS ACLs)")
+			}
 			home := t.TempDir()
-			t.Setenv("HOME", home)
+			testenv.RedirectHome(t, home)
 
 			store, err := OpenStore(ProviderClaude)
 			if err != nil {
@@ -72,8 +78,11 @@ func TestLinuxStore(t *testing.T) {
 			}
 		}},
 		{"parent dir mode", func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("POSIX dir modes are advisory on Windows (NTFS ACLs)")
+			}
 			home := t.TempDir()
-			t.Setenv("HOME", home)
+			testenv.RedirectHome(t, home)
 
 			if _, err := OpenStore(ProviderClaude); err != nil {
 				t.Fatalf("OpenStore: %v", err)
@@ -90,7 +99,7 @@ func TestLinuxStore(t *testing.T) {
 		}},
 		{"concurrent upserts", func(t *testing.T) {
 			home := t.TempDir()
-			t.Setenv("HOME", home)
+			testenv.RedirectHome(t, home)
 
 			store, err := OpenStore(ProviderClaude)
 			if err != nil {
@@ -117,7 +126,7 @@ func TestLinuxStore(t *testing.T) {
 		}},
 		{"empty after final delete removes file", func(t *testing.T) {
 			home := t.TempDir()
-			t.Setenv("HOME", home)
+			testenv.RedirectHome(t, home)
 
 			store, err := OpenStore(ProviderClaude)
 			if err != nil {
@@ -137,7 +146,7 @@ func TestLinuxStore(t *testing.T) {
 		// Exercises the path where no file has ever been written.
 		{"list missing file", func(t *testing.T) {
 			home := t.TempDir()
-			t.Setenv("HOME", home)
+			testenv.RedirectHome(t, home)
 
 			store, err := OpenStore(ProviderClaude)
 			if err != nil {
@@ -156,13 +165,13 @@ func TestLinuxStore(t *testing.T) {
 		// migration. Ensures parameterization refactor preserves the existing path.
 		{"claude file path", func(t *testing.T) {
 			home := t.TempDir()
-			t.Setenv("HOME", home)
+			testenv.RedirectHome(t, home)
 
 			store, err := OpenStore(ProviderClaude)
 			if err != nil {
 				t.Fatalf("OpenStore: %v", err)
 			}
-			ls := store.(*linuxStore)
+			ls := store.(*fileStore)
 
 			wantPath := filepath.Join(home, ".config", "aistat", "accounts", "claude.json")
 			if ls.path != wantPath {
@@ -171,13 +180,13 @@ func TestLinuxStore(t *testing.T) {
 		}},
 		{"claude lock path", func(t *testing.T) {
 			home := t.TempDir()
-			t.Setenv("HOME", home)
+			testenv.RedirectHome(t, home)
 
 			store, err := OpenStore(ProviderClaude)
 			if err != nil {
 				t.Fatalf("OpenStore: %v", err)
 			}
-			ls := store.(*linuxStore)
+			ls := store.(*fileStore)
 
 			wantLock := filepath.Join(home, ".config", "aistat", "accounts", ".claude.lock")
 			if ls.lockPath != wantLock {
@@ -186,7 +195,7 @@ func TestLinuxStore(t *testing.T) {
 		}},
 		{"corrupt json error", func(t *testing.T) {
 			home := t.TempDir()
-			t.Setenv("HOME", home)
+			testenv.RedirectHome(t, home)
 
 			dir := filepath.Join(home, ".config", "aistat", "accounts")
 			os.MkdirAll(dir, 0700)
@@ -208,7 +217,7 @@ func TestLinuxStore(t *testing.T) {
 		// own files and the two stores do not share data.
 		{"codex path isolation", func(t *testing.T) {
 			home := t.TempDir()
-			t.Setenv("HOME", home)
+			testenv.RedirectHome(t, home)
 
 			claudeStore, err := OpenStore(ProviderClaude)
 			if err != nil {
@@ -233,7 +242,7 @@ func TestLinuxStore(t *testing.T) {
 			dir := filepath.Join(home, ".config", "aistat", "accounts")
 
 			// Assert Codex data and lock paths.
-			cs := codexStore.(*linuxStore)
+			cs := codexStore.(*fileStore)
 			wantCodexPath := filepath.Join(dir, "codex.json")
 			wantCodexLock := filepath.Join(dir, ".codex.lock")
 			if cs.path != wantCodexPath {

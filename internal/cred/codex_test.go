@@ -7,9 +7,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/drogers0/aistat/v2/internal/testenv"
 	"github.com/drogers0/aistat/v2/internal/testutil"
 )
 
@@ -25,7 +27,7 @@ func makeTestJWT(t *testing.T, payloadJSON string) string {
 func writeAuth(t *testing.T, body string) string {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.RedirectHome(t, home)
 	dir := filepath.Join(home, ".codex")
 	testutil.WantNoErr(t, os.MkdirAll(dir, 0o700))
 	testutil.WantNoErr(t, os.WriteFile(filepath.Join(dir, "auth.json"), []byte(body), 0o600))
@@ -46,7 +48,7 @@ func TestReadCodexToken(t *testing.T) {
 			}
 		}},
 		{"missing", func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir()) // no .codex dir
+			testenv.RedirectHome(t, t.TempDir()) // no .codex dir
 			_, err := ReadCodexToken(context.Background())
 			if !errors.Is(err, ErrCodexTokenNotFound) {
 				t.Errorf("expected ErrCodexTokenNotFound, got: %v", err)
@@ -298,7 +300,7 @@ func TestReadCodexCredential(t *testing.T) {
 			}
 		}},
 		{"missing", func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
+			testenv.RedirectHome(t, t.TempDir())
 			_, err := ReadCodexCredential(context.Background())
 			if !errors.Is(err, ErrCodexTokenNotFound) {
 				t.Errorf("expected ErrCodexTokenNotFound, got: %v", err)
@@ -346,7 +348,7 @@ func TestWriteCodexLiveBlob(t *testing.T) {
 	}{
 		{"happy path", func(t *testing.T) {
 			home := t.TempDir()
-			t.Setenv("HOME", home)
+			testenv.RedirectHome(t, home)
 			// Pre-create the .codex dir so we can confirm mode on write.
 			testutil.WantNoErr(t, os.MkdirAll(filepath.Join(home, ".codex"), 0o700))
 			data := []byte(`{"tokens":{"access_token":"written"}}`)
@@ -357,15 +359,19 @@ func TestWriteCodexLiveBlob(t *testing.T) {
 			if !bytes.Equal(got, data) {
 				t.Errorf("content = %q, want %q", got, data)
 			}
-			info, err := os.Stat(path)
-			testutil.WantNoErr(t, err)
-			if perm := info.Mode().Perm(); perm != 0o600 {
-				t.Errorf("mode = %o, want 0600", perm)
+			// POSIX file modes are advisory on Windows (NTFS ACLs), so assert the
+			// 0600 mode only on unix; the write round-trip above still runs on Windows.
+			if runtime.GOOS != "windows" {
+				info, err := os.Stat(path)
+				testutil.WantNoErr(t, err)
+				if perm := info.Mode().Perm(); perm != 0o600 {
+					t.Errorf("mode = %o, want 0600", perm)
+				}
 			}
 		}},
 		{"creates dir", func(t *testing.T) {
 			home := t.TempDir()
-			t.Setenv("HOME", home)
+			testenv.RedirectHome(t, home)
 			// Do NOT pre-create .codex dir.
 			data := []byte(`{"tokens":{"access_token":"new"}}`)
 			testutil.WantNoErr(t, WriteCodexLiveBlob(context.Background(), data))
@@ -377,7 +383,7 @@ func TestWriteCodexLiveBlob(t *testing.T) {
 		}},
 		{"atomic", func(t *testing.T) {
 			home := t.TempDir()
-			t.Setenv("HOME", home)
+			testenv.RedirectHome(t, home)
 			dir := filepath.Join(home, ".codex")
 			testutil.WantNoErr(t, os.MkdirAll(dir, 0o700))
 			testutil.WantNoErr(t, WriteCodexLiveBlob(context.Background(), []byte(`{"tokens":{"access_token":"x"}}`)))
@@ -389,7 +395,7 @@ func TestWriteCodexLiveBlob(t *testing.T) {
 		}},
 		{"overwrites", func(t *testing.T) {
 			home := t.TempDir()
-			t.Setenv("HOME", home)
+			testenv.RedirectHome(t, home)
 			first := []byte(`{"tokens":{"access_token":"first"}}`)
 			second := []byte(`{"tokens":{"access_token":"second"}}`)
 			testutil.WantNoErr(t, WriteCodexLiveBlob(context.Background(), first))
@@ -402,7 +408,7 @@ func TestWriteCodexLiveBlob(t *testing.T) {
 		}},
 		{"round trip", func(t *testing.T) {
 			home := t.TempDir()
-			t.Setenv("HOME", home)
+			testenv.RedirectHome(t, home)
 			body := `{"tokens":{"access_token":"rt-tok","refresh_token":"rt-ref"}}`
 			testutil.WantNoErr(t, WriteCodexLiveBlob(context.Background(), []byte(body)))
 			cred, err := ReadCodexCredential(context.Background())

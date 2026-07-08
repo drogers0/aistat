@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux || windows
 
 package cred
 
@@ -8,8 +8,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
+	"github.com/drogers0/aistat/v2/internal/testenv"
 	"github.com/drogers0/aistat/v2/internal/testutil"
 )
 
@@ -29,7 +31,7 @@ func TestReadClaudeToken(t *testing.T) {
 	}{
 		{"happy path", func(t *testing.T) {
 			dir := t.TempDir()
-			t.Setenv("HOME", dir)
+			testenv.RedirectHome(t, dir)
 			writeCred(t, dir, `{"claudeAiOauth":{"accessToken":"sk-ant-oat01-abc"}}`)
 			got, err := ReadClaudeToken(context.Background())
 			testutil.WantNoErr(t, err)
@@ -38,7 +40,7 @@ func TestReadClaudeToken(t *testing.T) {
 			}
 		}},
 		{"missing file", func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
+			testenv.RedirectHome(t, t.TempDir())
 			_, err := ReadClaudeToken(context.Background())
 			if !errors.Is(err, ErrClaudeTokenNotFound) {
 				t.Errorf("expected ErrClaudeTokenNotFound, got: %v", err)
@@ -46,7 +48,7 @@ func TestReadClaudeToken(t *testing.T) {
 		}},
 		{"malformed json", func(t *testing.T) {
 			dir := t.TempDir()
-			t.Setenv("HOME", dir)
+			testenv.RedirectHome(t, dir)
 			writeCred(t, dir, "not json")
 			_, err := ReadClaudeToken(context.Background())
 			if err == nil {
@@ -58,7 +60,7 @@ func TestReadClaudeToken(t *testing.T) {
 		}},
 		{"empty token", func(t *testing.T) {
 			dir := t.TempDir()
-			t.Setenv("HOME", dir)
+			testenv.RedirectHome(t, dir)
 			writeCred(t, dir, `{"claudeAiOauth":{"accessToken":""}}`)
 			_, err := ReadClaudeToken(context.Background())
 			if !errors.Is(err, ErrClaudeTokenNotFound) {
@@ -78,7 +80,7 @@ func TestWriteClaudeLiveBlob(t *testing.T) {
 	}{
 		{"happy path", func(t *testing.T) {
 			dir := t.TempDir()
-			t.Setenv("HOME", dir)
+			testenv.RedirectHome(t, dir)
 			blob := []byte(`{"claudeAiOauth":{"accessToken":"sk-ant-write-test","refreshToken":"rt","expiresAt":9999}}`)
 			testutil.WantNoErr(t, WriteClaudeLiveBlob(context.Background(), blob))
 			c, err := ReadClaudeCredential(context.Background())
@@ -91,8 +93,11 @@ func TestWriteClaudeLiveBlob(t *testing.T) {
 			}
 		}},
 		{"file mode", func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("POSIX file modes are advisory on Windows (NTFS ACLs)")
+			}
 			dir := t.TempDir()
-			t.Setenv("HOME", dir)
+			testenv.RedirectHome(t, dir)
 			blob := []byte(`{"claudeAiOauth":{"accessToken":"tok"}}`)
 			testutil.WantNoErr(t, WriteClaudeLiveBlob(context.Background(), blob))
 			path := filepath.Join(dir, ".claude", ".credentials.json")
@@ -103,8 +108,11 @@ func TestWriteClaudeLiveBlob(t *testing.T) {
 			}
 		}},
 		{"creates parent dir", func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("POSIX dir modes are advisory on Windows (NTFS ACLs)")
+			}
 			dir := t.TempDir()
-			t.Setenv("HOME", dir)
+			testenv.RedirectHome(t, dir)
 			// Do not pre-create ~/.claude; WriteClaudeLiveBlob must create it.
 			blob := []byte(`{"claudeAiOauth":{"accessToken":"tok"}}`)
 			testutil.WantNoErr(t, WriteClaudeLiveBlob(context.Background(), blob))
@@ -120,7 +128,7 @@ func TestWriteClaudeLiveBlob(t *testing.T) {
 		}},
 		{"no tmp file after success", func(t *testing.T) {
 			dir := t.TempDir()
-			t.Setenv("HOME", dir)
+			testenv.RedirectHome(t, dir)
 			claudeDir := filepath.Join(dir, ".claude")
 			testutil.WantNoErr(t, os.MkdirAll(claudeDir, 0o700))
 
@@ -136,7 +144,7 @@ func TestWriteClaudeLiveBlob(t *testing.T) {
 		}},
 		{"no tmp file after failure", func(t *testing.T) {
 			dir := t.TempDir()
-			t.Setenv("HOME", dir)
+			testenv.RedirectHome(t, dir)
 			claudeDir := filepath.Join(dir, ".claude")
 			testutil.WantNoErr(t, os.MkdirAll(claudeDir, 0o700))
 
@@ -162,6 +170,10 @@ func TestWriteClaudeLiveBlob(t *testing.T) {
 		}},
 		{"home unset", func(t *testing.T) {
 			t.Setenv("HOME", "")
+			if runtime.GOOS == "windows" {
+				// os.UserHomeDir reads %USERPROFILE% on Windows, not $HOME.
+				t.Setenv("USERPROFILE", "")
+			}
 			err := WriteClaudeLiveBlob(context.Background(), []byte(`{"claudeAiOauth":{"accessToken":"tok"}}`))
 			if err == nil {
 				t.Fatal("expected error when HOME is unset")

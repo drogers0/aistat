@@ -14,7 +14,7 @@
 
 ---
 
-A command line utility that reads your **Claude**, **Codex**, and **Copilot** usage limits from the same credential stores those tools already use — and switches between stored accounts without a browser round-trip.
+A command line utility that reads your **Claude**, **Codex**, and **Copilot** usage limits from the same credential stores those tools already use — and switches between stored accounts without a browser round-trip. Model-scoped weekly windows (like `7-day fable` above) are shown for visibility whenever Anthropic's usage response scopes a limit to a specific model.
 
 ```console
 $ aistat -h
@@ -23,6 +23,7 @@ Claude usage
   - 5-hour: 92.0% (resets in 4h 53m)
   - 7-day: 71.0% (resets in 2d 5h)
   - 7-day sonnet: 58.0% (resets in 2d 5h)
+  - 7-day fable: 34.0% (resets in 2d 5h)
 - work@example.com [Max 20x]
   - 5-hour: 4.0% (resets in 4h 12m)
   - 7-day: 12.0% (resets in 5d 9h)
@@ -61,14 +62,16 @@ Three runnable examples in [`examples/`](examples/) put the pattern to work:
 
 ## Installation
 
+Works on **macOS**, **Linux**, and **Windows** (Git Bash + WSL):
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/drogers0/aistat/main/install.sh | sh
 ```
 
-Prebuilt releases ship for **macOS** (arm64, amd64) and **Linux** (amd64, arm64). Windows may work but isn't currently supported.
-
 <details>
 <summary>Other install options</summary>
+
+**Manual download:** grab a tarball (`.zip` on Windows) from the [Releases page](https://github.com/drogers0/aistat/releases) and place `aistat` on your PATH.
 
 **Pin a specific version:**
 
@@ -93,8 +96,6 @@ curl -fsSL https://raw.githubusercontent.com/drogers0/aistat/main/install.sh | s
 ```bash
 go install github.com/drogers0/aistat/v2/cmd/aistat@latest
 ```
-
-**Manual download:** grab a tarball from the [Releases page](https://github.com/drogers0/aistat/releases) and place `aistat` on your PATH.
 
 </details>
 

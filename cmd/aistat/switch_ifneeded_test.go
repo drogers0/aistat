@@ -400,6 +400,15 @@ func TestSwitchIfNeeded(t *testing.T) {
 				t.Errorf("live blob written despite single-account dead end: %s", *written)
 			}
 		}},
+		{"if-needed with nothing stored is nothing to do", func(t *testing.T) {
+			// A timer-driven poll against a provider with no stored accounts is a
+			// no-op, not misuse — exit 0, same as the single-account dead end.
+			withMemoryStore(t)          // empty store
+			withSwitchActiveUUID(t, "") // no active account to resolve
+			r := runSwitchTest("claude", "--if-needed")
+			wantExit(t, r, 0)
+			wantErrOut(t, r, "no accounts stored")
+		}},
 		{"to with notify sends plain notification", func(t *testing.T) {
 			seedTwoAccounts(t)
 			withSwitchClient(t, &stubSwitchClient{})

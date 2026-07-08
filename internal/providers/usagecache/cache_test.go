@@ -1,27 +1,27 @@
-//go:build darwin || linux
+//go:build darwin || linux || windows
 
 package usagecache
 
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/drogers0/aistat/v2/internal/providers"
+	"github.com/drogers0/aistat/v2/internal/testenv"
 )
 
 // setupTestCache creates an isolated Cache for each test using t.TempDir as
-// the home directory. Setting HOME redirects os.UserCacheDir on both darwin
-// ($HOME/Library/Caches) and linux ($HOME/.cache when XDG_CACHE_HOME is
-// cleared).
+// the home directory. testenv.RedirectHome points os.UserCacheDir at the temp
+// dir on every OS (darwin $HOME/Library/Caches, linux $HOME/.cache, windows
+// %LocalAppData%).
 func setupTestCache(t *testing.T, nowFn func() time.Time, warnFn func(string)) *Cache {
 	t.Helper()
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-	t.Setenv("XDG_CACHE_HOME", "") // cleared so Linux falls back to $HOME/.cache
+	testenv.RedirectHome(t, t.TempDir())
 	return New("claude", nowFn, warnFn)
 }
 
@@ -197,9 +197,7 @@ func TestCache_DisabledCache(t *testing.T) {
 		run  func(t *testing.T)
 	}{
 		{"blocked dir", func(t *testing.T) {
-			tmp := t.TempDir()
-			t.Setenv("HOME", tmp)
-			t.Setenv("XDG_CACHE_HOME", "")
+			testenv.RedirectHome(t, t.TempDir())
 
 			// Resolve the cache dir path, then block it by creating a file in its place.
 			cacheBase, err := os.UserCacheDir()
@@ -245,9 +243,7 @@ func TestCache_DisabledCache(t *testing.T) {
 			}
 		}},
 		{"invalid provider", func(t *testing.T) {
-			tmp := t.TempDir()
-			t.Setenv("HOME", tmp)
-			t.Setenv("XDG_CACHE_HOME", "")
+			testenv.RedirectHome(t, t.TempDir())
 
 			var warns []string
 			warnFn := func(s string) { warns = append(warns, s) }
@@ -344,9 +340,7 @@ func TestCache_Naming(t *testing.T) {
 		run  func(t *testing.T)
 	}{
 		{"path", func(t *testing.T) {
-			tmp := t.TempDir()
-			t.Setenv("HOME", tmp)
-			t.Setenv("XDG_CACHE_HOME", "")
+			testenv.RedirectHome(t, t.TempDir())
 
 			cacheBase, err := os.UserCacheDir()
 			if err != nil {
@@ -361,9 +355,7 @@ func TestCache_Naming(t *testing.T) {
 			}
 		}},
 		{"lock", func(t *testing.T) {
-			tmp := t.TempDir()
-			t.Setenv("HOME", tmp)
-			t.Setenv("XDG_CACHE_HOME", "")
+			testenv.RedirectHome(t, t.TempDir())
 
 			cacheBase, err := os.UserCacheDir()
 			if err != nil {
@@ -386,9 +378,7 @@ func TestCache_Naming(t *testing.T) {
 // TestCache_CodexIsolation asserts that New("codex", ...) writes to
 // codex-v1.json / codex.cache.lock, separate from the claude files.
 func TestCache_CodexIsolation(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-	t.Setenv("XDG_CACHE_HOME", "")
+	testenv.RedirectHome(t, t.TempDir())
 
 	cacheBase, err := os.UserCacheDir()
 	if err != nil {
@@ -436,9 +426,7 @@ func TestCache_WarnPrefix(t *testing.T) {
 		run  func(t *testing.T)
 	}{
 		{"corrupt file", func(t *testing.T) {
-			tmp := t.TempDir()
-			t.Setenv("HOME", tmp)
-			t.Setenv("XDG_CACHE_HOME", "")
+			testenv.RedirectHome(t, t.TempDir())
 
 			var warns []string
 			warnFn := func(s string) { warns = append(warns, s) }
@@ -464,9 +452,7 @@ func TestCache_WarnPrefix(t *testing.T) {
 		// ("aistat: claude: usage cache: read error: ..."). Triggered by placing a
 		// directory at the cache file path so os.ReadFile fails with EISDIR.
 		{"read error", func(t *testing.T) {
-			tmp := t.TempDir()
-			t.Setenv("HOME", tmp)
-			t.Setenv("XDG_CACHE_HOME", "")
+			testenv.RedirectHome(t, t.TempDir())
 
 			var warns []string
 			warnFn := func(s string) { warns = append(warns, s) }
@@ -488,9 +474,10 @@ func TestCache_WarnPrefix(t *testing.T) {
 		// the cache directory read-only after the lock file is created but before
 		// atomicWrite tries to create the tmp file.
 		{"write failed", func(t *testing.T) {
-			tmp := t.TempDir()
-			t.Setenv("HOME", tmp)
-			t.Setenv("XDG_CACHE_HOME", "")
+			if runtime.GOOS == "windows" {
+				t.Skip("POSIX file-mode semantics: chmod 0500 does not block writes via NTFS ACLs")
+			}
+			testenv.RedirectHome(t, t.TempDir())
 
 			var warns []string
 			warnFn := func(s string) { warns = append(warns, s) }
