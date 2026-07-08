@@ -137,6 +137,23 @@ Auto-pick buckets candidates by 5% (so 87% and 89% are equivalent) and breaks ti
 > [!WARNING]
 > `aistat switch` rotates the credential for the whole device, not per session. Every Claude Code session sharing this credential picks up the new account on its next read — there's no per-session or per-chat isolation.
 
+### Conditional switching (--if-needed)
+
+`aistat switch --if-needed` only switches when the active account has actually crossed a usage threshold — otherwise it prints `no switch needed (<window> at <used>%)` and exits 0 without touching the credential. This is a pre-pass: it checks the active account's own usage first and only fetches every stored account's usage (the auto-pick step) once a threshold is actually crossed.
+
+Two independent thresholds, checked as used-percent (five-hour is checked before the weekly window):
+
+| Env var | Default | Notes |
+|---|---|---|
+| `AISTAT_IF_ABOVE_5H` | 85 | Triggers on the `five_hour` window |
+| `AISTAT_IF_ABOVE_WEEKLY` | 95 | Triggers on the binding weekly window (`seven_day` / `thirty_day`) |
+
+Set either to `off` to disable that window as a trigger. Precedence is simply: non-empty process env value, else the built-in default.
+
+Add `--notify` for a desktop notification (macOS only, silent no-op elsewhere) — fired on a successful switch, or when the threshold is hit but no better account is available.
+
+`--if-needed` is mutually exclusive with `--to` (a usage error, exit 2). Like unconditional switch, it fails closed: a fetch or write error exits 1 without mutating the live credential.
+
 ## Authentication
 
 `aistat` reads from the credential stores each tool already populates. If a credential is missing, the error message names the exact command to fix it.
