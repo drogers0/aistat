@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux || windows
 
 package cred
 
@@ -11,7 +11,8 @@ import (
 	"path/filepath"
 )
 
-// credPath returns the path to ~/.claude/.credentials.json.
+// credPath returns the path to ~/.claude/.credentials.json
+// (%USERPROFILE%\.claude\.credentials.json on Windows).
 func credPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -19,13 +20,14 @@ func credPath() (string, error) {
 		// as the sentinel so callers classify this as auth-missing, not as a
 		// wrapped os error. Wrapping with %w would make errors.Is match against
 		// internal os/syscall errors, which callers should not depend on.
-		return "", fmt.Errorf("%w: cannot resolve home directory ($HOME unset): %v", ErrClaudeTokenNotFound, err)
+		return "", fmt.Errorf("%w: cannot resolve home directory ($HOME/%%USERPROFILE%% unset): %v", ErrClaudeTokenNotFound, err)
 	}
 	return filepath.Join(home, ".claude", ".credentials.json"), nil
 }
 
 // ReadClaudeCredential returns the full credential blob from
-// ~/.claude/.credentials.json (the file `claude /login` writes on Linux).
+// ~/.claude/.credentials.json (the file `claude /login` writes on Linux and
+// Windows — plaintext, same JSON shape on both).
 // ctx is accepted for signature parity; not used by the current implementation.
 //
 // File permissions are the Claude Code CLI's responsibility (it created the
@@ -46,7 +48,7 @@ func ReadClaudeCredential(ctx context.Context) (Credential, error) {
 }
 
 // ReadClaudeToken returns the OAuth access token from
-// ~/.claude/.credentials.json (the file `claude /login` writes on Linux).
+// ~/.claude/.credentials.json (the file `claude /login` writes on Linux and Windows).
 // ctx is accepted for signature parity; not used by the current implementation.
 //
 // File permissions are the Claude Code CLI's responsibility (it created the
@@ -93,7 +95,7 @@ func WriteClaudeLiveBlob(ctx context.Context, rawBlob []byte) error {
 	}
 	// Sync before close so a crash between rename and the next fsync cannot leave
 	// the live credential half-written. Matches the atomic-write pattern in
-	// internal/accounts/store_linux.go and internal/providers/claude/usagecache.go.
+	// internal/accounts/store_file.go and internal/providers/usagecache/cache.go.
 	if err := tmp.Sync(); err != nil {
 		tmp.Close()
 		return fmt.Errorf("syncing credential file: %w", err)

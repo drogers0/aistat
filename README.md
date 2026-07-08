@@ -62,14 +62,16 @@ Three runnable examples in [`examples/`](examples/) put the pattern to work:
 
 ## Installation
 
+Works on **macOS**, **Linux**, and **Windows** (Git Bash + WSL):
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/drogers0/aistat/main/install.sh | sh
 ```
 
-Prebuilt releases ship for **macOS** (arm64, amd64) and **Linux** (amd64, arm64). Windows may work but isn't currently supported.
-
 <details>
 <summary>Other install options</summary>
+
+**Manual download:** grab a tarball (`.zip` on Windows) from the [Releases page](https://github.com/drogers0/aistat/releases) and place `aistat` on your PATH.
 
 **Pin a specific version:**
 
@@ -94,8 +96,6 @@ curl -fsSL https://raw.githubusercontent.com/drogers0/aistat/main/install.sh | s
 ```bash
 go install github.com/drogers0/aistat/v2/cmd/aistat@latest
 ```
-
-**Manual download:** grab a tarball from the [Releases page](https://github.com/drogers0/aistat/releases) and place `aistat` on your PATH.
 
 </details>
 

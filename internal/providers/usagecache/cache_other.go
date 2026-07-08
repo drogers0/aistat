@@ -1,4 +1,4 @@
-//go:build !darwin && !linux
+//go:build !darwin && !linux && !windows
 
 // Package usagecache provides a no-op usage cache stub on unsupported platforms.
 package usagecache

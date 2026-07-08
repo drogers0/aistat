@@ -1,9 +1,11 @@
-//go:build darwin || linux
+//go:build darwin || linux || windows
 
 package accounts
 
 import (
 	"testing"
+
+	"github.com/drogers0/aistat/v2/internal/testenv"
 )
 
 func TestProviderValidate(t *testing.T) {
@@ -47,7 +49,7 @@ func TestOpenStore_InvalidProvider(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Use a temp home so no real credential dirs are touched.
-			t.Setenv("HOME", t.TempDir())
+			testenv.RedirectHome(t, t.TempDir())
 			_, err := OpenStore(tt.p)
 			if err == nil {
 				t.Errorf("OpenStore(%q): want error, got nil", tt.p)

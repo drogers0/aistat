@@ -25,8 +25,8 @@ func codexAuthPath() (string, error) {
 		// auth-missing via ErrCodexTokenNotFound; wrapping the os error
 		// with %w would let errors.Is match internal syscall errors,
 		// which callers should not depend on. Same discipline as credPath()
-		// in internal/cred/keychain_linux.go.
-		return "", fmt.Errorf("%w: cannot resolve home directory ($HOME unset): %v", ErrCodexTokenNotFound, err)
+		// in internal/cred/keychain_file.go.
+		return "", fmt.Errorf("%w: cannot resolve home directory ($HOME/%%USERPROFILE%% unset): %v", ErrCodexTokenNotFound, err)
 	}
 	return filepath.Join(home, ".codex", "auth.json"), nil
 }
@@ -149,7 +149,7 @@ func ReadCodexToken(ctx context.Context) (string, error) {
 // The parent directory (~/.codex) is created with mode 0700 if absent.
 // The file is written with mode 0600 via a temporary file + os.Rename so a
 // partial write is never observable. fsync before rename matches the pattern
-// in internal/cred/keychain_linux.go and internal/providers/claude/usagecache.go.
+// in internal/cred/keychain_file.go and internal/providers/usagecache/cache.go.
 // ctx is accepted for signature parity; not used by the current implementation.
 func WriteCodexLiveBlob(ctx context.Context, rawBlob []byte) error {
 	path, err := codexAuthPath()
