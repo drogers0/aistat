@@ -424,6 +424,10 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, opts swi
 		// Auto-pick mode: fetch usage for non-active accounts.
 		if len(stored) == 0 {
 			fmt.Fprintf(stderr, "no accounts stored; %s\n", h.loginHint)
+			if opts.ifNeeded {
+				// A timer-driven poll with nothing stored is "nothing to do", not misuse.
+				return 0
+			}
 			return int(orchestrate.StatusUsageError)
 		}
 
