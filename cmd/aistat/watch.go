@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/drogers0/aistat/v2/internal/autoswitch"
-	"github.com/drogers0/aistat/v2/internal/notify"
 	"github.com/drogers0/aistat/v2/internal/orchestrate"
 )
 
@@ -155,16 +154,14 @@ func runWatch(args []string, stdout, stderr io.Writer, g globals) int {
 		handles = []switchHandle{handleByID(handles, providerArg)}
 	}
 
-	// Install a dedup notifier for the daemon's lifetime: watch owns the
-	// process, so mutating the package-level seam is fine here (production
-	// only — tests that call runWatch must save/restore it themselves, but
-	// the validation tests below return before this line).
-	sendNotification = newDedupNotifier(notify.Send, time.Hour, time.Now)
-
 	opts := switchOpts{
 		ifNeeded: true,
 		notify:   true,
 		th:       autoswitch.Thresholds{FiveHour: fiveHourTh, Weekly: weeklyTh},
+		// Dedup notifier for the daemon's lifetime: a persistent "no better
+		// account" state warns once, not every tick. Wraps the sendNotification
+		// seam (honoring a test-installed fake) rather than mutating it.
+		notifier: newDedupNotifier(sendNotification, time.Hour, time.Now),
 	}
 
 	providerDesc := "all providers"

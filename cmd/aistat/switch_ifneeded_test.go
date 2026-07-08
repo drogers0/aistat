@@ -409,6 +409,42 @@ func TestSwitchIfNeeded(t *testing.T) {
 			wantExit(t, r, 0)
 			wantErrOut(t, r, "no accounts stored")
 		}},
+		{"codex below threshold prints no switch needed", func(t *testing.T) {
+			// runSwitchSingle is provider-generic; this covers the codex handle
+			// wiring (its own store, active-uuid, and fetch seams) end to end.
+			clearThresholdEnv(t)
+			ms := withCodexMemoryStore(t)
+			now := time.Now()
+			seedCodexAccount(t, ms, "uuid-cwork", "cwork@example.com", "plan", now.Add(-2*time.Hour))
+			seedCodexAccount(t, ms, "uuid-cpersonal", "cpersonal@example.com", "plan", now.Add(-1*time.Hour))
+			withCodexActiveUUID(t, "uuid-cwork")
+			withCodexSwitchClient(t, &stubCodexSwitchClient{})
+			withCodexFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
+				return makeLimitsFull(map[string]float64{"five_hour": 58, "seven_day": 50}), nil
+			})
+			r := runSwitchTest("codex", "--if-needed")
+			wantExit(t, r, 0)
+			wantOut(t, r, "no switch needed (five_hour at 42%)")
+		}},
+		{"codex triggered switches to the better account", func(t *testing.T) {
+			clearThresholdEnv(t)
+			ms := withCodexMemoryStore(t)
+			now := time.Now()
+			seedCodexAccount(t, ms, "uuid-cwork", "cwork@example.com", "plan", now.Add(-2*time.Hour))
+			seedCodexAccount(t, ms, "uuid-cpersonal", "cpersonal@example.com", "plan", now.Add(-1*time.Hour))
+			withCodexActiveUUID(t, "uuid-cwork")
+			withCodexFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
+				return makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50}), nil
+			})
+			withCodexSwitchClient(t, &stubCodexSwitchClient{fetchResults: []providers.AccountResult{
+				{UUID: "uuid-cwork", Email: "cwork@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50})},
+				{UUID: "uuid-cpersonal", Email: "cpersonal@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 90, "seven_day": 80})},
+			}})
+			_, _ = withCodexWriteBlob(t)
+			r := runSwitchTest("codex", "--if-needed")
+			wantExit(t, r, 0)
+			wantOut(t, r, "switched to cpersonal@example.com")
+		}},
 		{"to with notify sends plain notification", func(t *testing.T) {
 			seedTwoAccounts(t)
 			withSwitchClient(t, &stubSwitchClient{})

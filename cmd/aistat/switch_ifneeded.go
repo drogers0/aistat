@@ -18,19 +18,28 @@ type switchOpts struct {
 	ifNeeded bool
 	notify   bool
 	th       autoswitch.Thresholds
+	// notifier delivers desktop notifications. A nil notifier means "use the
+	// default seam" (sendNotification), so the common path leaves it unset;
+	// watch installs a dedup-wrapping notifier here instead of mutating the
+	// package global at runtime.
+	notifier func(context.Context, string, string) error
 }
 
 // sendNotification posts a desktop notification. Package-level injection
-// seam — overridden by tests.
+// seam — the default when switchOpts.notifier is nil, and overridden by tests.
 var sendNotification = notify.Send
 
 // notifyBestEffort sends a desktop notification, logging failure to stderr
-// without affecting the exit code. Bounded: fire-and-forget osascript must
-// not hang a launchd run on a stuck permission prompt.
-func notifyBestEffort(ctx context.Context, providerID, message string, stderr io.Writer) {
+// without affecting the exit code. A nil notifier falls back to the
+// sendNotification seam. Bounded: fire-and-forget osascript must not hang a
+// launchd run on a stuck permission prompt.
+func notifyBestEffort(ctx context.Context, notifier func(context.Context, string, string) error, providerID, message string, stderr io.Writer) {
+	if notifier == nil {
+		notifier = sendNotification
+	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if err := sendNotification(ctx, providers.Title(providerID), message); err != nil {
+	if err := notifier(ctx, providers.Title(providerID), message); err != nil {
 		fmt.Fprintf(stderr, "aistat: %s: notification failed: %s\n", providerID, err)
 	}
 }

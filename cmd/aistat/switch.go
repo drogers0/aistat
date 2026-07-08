@@ -363,6 +363,51 @@ func runSwitch(args []string, stdout, stderr io.Writer, g globals) int {
 	return runSwitchBulk(ctx, handles, opts, stdout, stderr, debugW)
 }
 
+// ifNeededResult carries the outcome of the --if-needed threshold gate back to
+// runSwitchSingle. When proceed is false the caller returns exitCode verbatim;
+// when true, reason/limits feed the downstream "already on best" comparison.
+// stored is always the post-reconcile store re-read so the caller adopts the
+// refreshed slice (a switchable's List returns a fresh header each call).
+type ifNeededResult struct {
+	stored   []accounts.Account
+	reason   string
+	limits   map[string]providers.Limit
+	proceed  bool
+	exitCode int
+}
+
+// evaluateIfNeeded runs the --if-needed gate for the active account: reconcile
+// the live credential back into the store, re-read it, fetch the active
+// account's usage, and decide whether a switch should proceed. It performs no
+// switch and mutates no live credential itself.
+func (h switchHandle) evaluateIfNeeded(ctx context.Context, stored []accounts.Account, activeUUID string, opts switchOpts, stdout, stderr, debugW io.Writer) ifNeededResult {
+	// The active account's stored blob goes stale between polls — the upstream
+	// CLI refreshes the live credential in place and only `usage`'s reconcile
+	// syncs it back. Reconcile here (best effort) and re-read the store so
+	// storedAccess below carries the current token instead of 401-looping until
+	// someone runs `aistat usage`.
+	_ = h.client.ReconcileAndPersist(ctx)
+	if refreshed, err := h.store.List(ctx); err == nil {
+		stored = refreshed
+	}
+	activeAcct := findAccountByUUID(stored, activeUUID)
+	if activeAcct == nil {
+		fmt.Fprintf(stderr, "aistat: %s: cannot determine the active account; skipping conditional switch\n", h.id)
+		return ifNeededResult{stored: stored, exitCode: int(orchestrate.StatusAnyFailed)}
+	}
+	limits, err := h.fetchLiveUsage(ctx, h.storedAccess(*activeAcct), activeAcct.UUID, h.ua, debugW)
+	if err != nil {
+		fmt.Fprintf(stderr, "aistat: %s: usage fetch for active account failed: %s\n", h.id, err)
+		return ifNeededResult{stored: stored, exitCode: int(orchestrate.StatusAnyFailed)}
+	}
+	reason, triggered := triggerReason(limits, opts.th)
+	if !triggered {
+		fmt.Fprintf(stdout, "no switch needed (%s)\n", usageSummary(limits))
+		return ifNeededResult{stored: stored, exitCode: 0}
+	}
+	return ifNeededResult{stored: stored, reason: reason, limits: limits, proceed: true}
+}
+
 // runSwitchSingle performs a switch for a single provider handle.
 // It contains the existing pick-target → write → reconcile logic.
 func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, opts switchOpts, stdout, stderr, debugW io.Writer) int {
@@ -388,7 +433,7 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, opts swi
 	// but nothing better" dead ends so the text cannot drift between them.
 	notifyNoBetter := func() {
 		if opts.notify && condReason != "" {
-			notifyBestEffort(ctx, h.id, condReason+", no better account available", stderr)
+			notifyBestEffort(ctx, opts.notifier, h.id, condReason+", no better account available", stderr)
 		}
 	}
 
@@ -432,32 +477,11 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, opts swi
 		}
 
 		if opts.ifNeeded {
-			// The active account's stored blob goes stale between polls — the
-			// upstream CLI refreshes the live credential in place and only
-			// `usage`'s reconcile syncs it back. Reconcile here (best effort)
-			// and re-read the store so storedAccess below carries the current
-			// token instead of 401-looping until someone runs `aistat usage`.
-			_ = h.client.ReconcileAndPersist(ctx)
-			if refreshed, err := h.store.List(ctx); err == nil {
-				stored = refreshed
+			r := h.evaluateIfNeeded(ctx, stored, activeUUID, opts, stdout, stderr, debugW)
+			if !r.proceed {
+				return r.exitCode
 			}
-			activeAcct := findAccountByUUID(stored, activeUUID)
-			if activeAcct == nil {
-				fmt.Fprintf(stderr, "aistat: %s: cannot determine the active account; skipping conditional switch\n", h.id)
-				return int(orchestrate.StatusAnyFailed)
-			}
-			limits, err := h.fetchLiveUsage(ctx, h.storedAccess(*activeAcct), activeAcct.UUID, h.ua, debugW)
-			if err != nil {
-				fmt.Fprintf(stderr, "aistat: %s: usage fetch for active account failed: %s\n", h.id, err)
-				return int(orchestrate.StatusAnyFailed)
-			}
-			reason, triggered := triggerReason(limits, opts.th)
-			if !triggered {
-				fmt.Fprintf(stdout, "no switch needed (%s)\n", usageSummary(limits))
-				return 0
-			}
-			condReason = reason
-			condActiveLimits = limits
+			stored, condReason, condActiveLimits = r.stored, r.reason, r.limits
 		}
 
 		if len(stored) == 1 && stored[0].UUID == activeUUID {
@@ -535,7 +559,7 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, opts swi
 		if condReason != "" {
 			msg += " (" + condReason + ")"
 		}
-		notifyBestEffort(ctx, h.id, msg, stderr)
+		notifyBestEffort(ctx, opts.notifier, h.id, msg, stderr)
 	}
 	if err := h.client.PostSwitchVerify(ctx, target); err != nil {
 		if errors.Is(err, providers.ErrAuthDenied) {
