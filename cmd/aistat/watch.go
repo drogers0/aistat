@@ -30,8 +30,11 @@ func newDedupNotifier(inner func(context.Context, string, string) error, cooldow
 		if e, ok := last[title]; ok && e.msg == message && now().Sub(e.at) < cooldown {
 			return nil // unchanged within cooldown → suppress
 		}
+		if err := inner(ctx, title, message); err != nil {
+			return err // don't remember a failed send — the next tick retries
+		}
 		last[title] = entry{msg: message, at: now()}
-		return inner(ctx, title, message)
+		return nil
 	}
 }
 

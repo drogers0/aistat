@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -96,6 +97,31 @@ func TestDedupNotifier(t *testing.T) {
 			_ = d(context.Background(), "Codex", "hit 85%")
 			if len(calls) != 2 {
 				t.Fatalf("expected 2 calls (independent titles), got %d: %v", len(calls), calls)
+			}
+		}},
+		{"failed send is not remembered so the next tick retries", func(t *testing.T) {
+			var calls []call
+			nowVal := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+			now := func() time.Time { return nowVal }
+			failNext := true
+			inner := func(_ context.Context, title, msg string) error {
+				calls = append(calls, call{title, msg})
+				if failNext {
+					failNext = false
+					return errors.New("osascript hiccup")
+				}
+				return nil
+			}
+			d := newDedupNotifier(inner, time.Hour, now)
+			if err := d(context.Background(), "Claude", "hit 85%"); err == nil {
+				t.Fatal("expected the failed send to surface its error")
+			}
+			nowVal = nowVal.Add(time.Minute) // still well within cooldown
+			if err := d(context.Background(), "Claude", "hit 85%"); err != nil {
+				t.Fatalf("retry after a failed send should succeed: %v", err)
+			}
+			if len(calls) != 2 {
+				t.Fatalf("expected 2 calls (failed send must not suppress the retry), got %d: %v", len(calls), calls)
 			}
 		}},
 	}
