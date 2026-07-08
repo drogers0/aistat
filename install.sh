@@ -1,8 +1,10 @@
 #!/bin/sh
-# aistat installer — downloads the latest release tarball for your OS/arch,
-# verifies its sha256 against the published checksums.txt, and installs the
-# `aistat` binary into PREFIX (default: /usr/local/bin, falling back to
-# $HOME/.local/bin if /usr/local/bin is not writable).
+# aistat installer — downloads the latest release archive for your OS/arch
+# (.tar.gz on macOS/Linux, .zip on Windows), verifies its sha256 against the
+# published checksums.txt, and installs the `aistat` binary into PREFIX
+# (default: /usr/local/bin, falling back to $HOME/.local/bin if /usr/local/bin
+# is not writable). On Windows it runs under Git Bash / MSYS (POSIX shell);
+# under WSL it installs the Linux build instead (which reads WSL paths).
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/drogers0/aistat/main/install.sh | sh
@@ -51,10 +53,15 @@ done
 err() { echo "aistat-install: $*" >&2; exit 1; }
 
 # --- detect OS / arch ---
+# bin: the binary name inside the archive; ext: the archive extension.
+# Git Bash / MSYS / Cygwin report uname like "mingw64_nt-10.0" — treat those as
+# Windows (this script needs a POSIX shell, so it runs under Git Bash but NOT
+# native PowerShell/cmd). WSL reports "linux" and gets the Linux build.
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
 case "$os" in
-  darwin|linux) ;;
-  *) err "unsupported OS: $os (aistat ships binaries for darwin and linux only)" ;;
+  darwin|linux)              bin=aistat;     ext=tar.gz ;;
+  mingw*|msys*|cygwin*|windows*) os=windows; bin=aistat.exe; ext=zip ;;
+  *) err "unsupported OS: $os (aistat ships binaries for darwin, linux, and windows only)" ;;
 esac
 
 arch=$(uname -m)
@@ -98,7 +105,7 @@ case "$tag" in v*) ;; *) tag="v$tag" ;; esac
 ver="${tag#v}"
 
 # --- compute URLs ---
-archive="aistat_${ver}_${os}_${arch}.tar.gz"
+archive="aistat_${ver}_${os}_${arch}.${ext}"
 base="https://github.com/$REPO/releases/download/$tag"
 archive_url="$base/$archive"
 checksums_url="$base/checksums.txt"
@@ -120,8 +127,23 @@ actual=$(sha256 "$tmp/$archive")
 [ "$expected" = "$actual" ] || err "checksum mismatch for $archive (expected $expected, got $actual)"
 
 # --- extract only the binary (sidesteps any LICENSE/README extras or path-traversal entries) ---
-tar -xzf "$tmp/$archive" -C "$tmp" aistat || err "extracting aistat from $archive failed"
-chmod +x "$tmp/aistat"
+case "$ext" in
+  tar.gz)
+    tar -xzf "$tmp/$archive" -C "$tmp" "$bin" || err "extracting $bin from $archive failed"
+    ;;
+  zip)
+    # Prefer unzip (bundled with Git for Windows); fall back to bsdtar, which can
+    # read zip archives (GNU tar cannot, so that path errors out cleanly).
+    if command -v unzip >/dev/null 2>&1; then
+      unzip -p "$tmp/$archive" "$bin" > "$tmp/$bin" || err "extracting $bin from $archive failed"
+    elif tar -xf "$tmp/$archive" -C "$tmp" "$bin" 2>/dev/null; then
+      :
+    else
+      err "need 'unzip' (bundled with Git for Windows) to extract $archive"
+    fi
+    ;;
+esac
+chmod +x "$tmp/$bin"
 
 # --- pick / validate prefix ---
 fell_back=0
@@ -139,12 +161,12 @@ else
 fi
 
 # --- install ---
-dest="$PREFIX/aistat"
-if mv "$tmp/aistat" "$dest" 2>/dev/null; then
+dest="$PREFIX/$bin"
+if mv "$tmp/$bin" "$dest" 2>/dev/null; then
   :
 elif command -v sudo >/dev/null 2>&1; then
   echo "aistat-install: installing to $dest (requires sudo)"
-  sudo mv "$tmp/aistat" "$dest" || err "failed to install to $dest"
+  sudo mv "$tmp/$bin" "$dest" || err "failed to install to $dest"
 else
   err "cannot write to $dest (no sudo available); re-run with --prefix=DIR"
 fi
