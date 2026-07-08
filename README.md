@@ -154,6 +154,62 @@ Add `--notify` for a desktop notification (macOS only, silent no-op elsewhere) �
 
 `--if-needed` is mutually exclusive with `--to` (a usage error, exit 2). Like unconditional switch, it fails closed: a fetch or write error exits 1 without mutating the live credential.
 
+### Running it in the background (aistat watch)
+
+`aistat watch` runs the same `--if-needed` check on a timer, in the foreground, with **in-memory notification dedup**: a persistent "no better account" state warns you once, not on every tick. It ticks immediately on startup, then every `--interval` seconds (default 300, minimum 60). You keep it alive with your OS's own service manager — `aistat watch` is not a service-install subcommand, just a long-running foreground loop.
+
+```
+aistat watch                              # all providers with ≥2 stored accounts, default thresholds
+aistat watch claude --interval 120        # claude only, checked every 2 minutes
+aistat watch --if-above-5h 90 --if-above-weekly off
+```
+
+**launchd (macOS)** — save as `~/Library/LaunchAgents/com.drogers0.aistat.watch.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.drogers0.aistat.watch</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/aistat</string>
+    <string>watch</string>
+    <string>--interval</string><string>300</string>
+  </array>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/aistat-watch.log</string>
+  <key>StandardErrorPath</key><string>/tmp/aistat-watch.log</string>
+</dict>
+</plist>
+```
+
+```
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.drogers0.aistat.watch.plist   # start
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.drogers0.aistat.watch.plist      # stop
+```
+
+**systemd (Linux)** — save as `~/.config/systemd/user/aistat-watch.service`:
+
+```ini
+[Unit]
+Description=aistat conditional account switcher
+
+[Service]
+ExecStart=/usr/local/bin/aistat watch --interval 300
+Restart=always
+
+[Install]
+WantedBy=default.target
+```
+
+```
+systemctl --user enable --now aistat-watch.service
+```
+
+`KeepAlive` / `Restart=always` also restart the daemon after a crash or logout — and the in-memory notification dedup resets on restart, so you may see one repeat notification right after a restart. That's acceptable; the alternative (persisting dedup state to disk) isn't worth the complexity for a warning you'll see once per restart at most.
+
 ## Authentication
 
 `aistat` reads from the credential stores each tool already populates. If a credential is missing, the error message names the exact command to fix it.

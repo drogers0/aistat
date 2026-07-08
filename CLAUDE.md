@@ -18,6 +18,9 @@ aistat switch --if-needed --notify     # same, plus a desktop notification on sw
                                         # thresholds: AISTAT_IF_ABOVE_5H (default 85) / AISTAT_IF_ABOVE_WEEKLY (default 95),
                                         # resolved process env > built-in default; "off" disables a window
 
+aistat watch [<provider>]              # foreground timer running switch --if-needed --notify (dedup'd notifications); daemonize via launchd/systemd
+                                        # --interval (default 300s, min 60), --if-above-5h / --if-above-weekly (default 85/95, "off" disables)
+
 aistat accounts list                   # list every provider's stored accounts (JSON: {claude:[...], codex:[...]}; text -h: section headers)
 aistat accounts list <provider>        # scope to one provider
 aistat accounts remove <id>            # infer provider from id-uniqueness; error if id matches > 1 provider
@@ -31,9 +34,11 @@ aistat --help
 
 JSON is the default; exit codes: 0 success / 1 any-provider-failed / 2 usage error / 3 stdout-write error.
 
+`aistat watch` is a foreground loop kept alive by the OS service manager (launchd `KeepAlive` / systemd `Restart=always`) — there is deliberately no `install`/`uninstall`/`status` subcommand; the unit file/plist is the "install".
+
 ## Repo layout
 
-- [cmd/aistat/](cmd/aistat/) — `main`, hand-rolled subcommand dispatch (`scanGlobals` + per-subcommand FlagSets), provider registry, fake-provider hooks. One file per subcommand: [main.go](cmd/aistat/main.go), [usage.go](cmd/aistat/usage.go), [switch.go](cmd/aistat/switch.go) (CLI-private `switchable` interface + `buildSwitchHandles` registry + bulk / single / inferred dispatch), [accounts.go](cmd/aistat/accounts.go) (`providerStore` + multi-provider list/remove with id-uniqueness inference).
+- [cmd/aistat/](cmd/aistat/) — `main`, hand-rolled subcommand dispatch (`scanGlobals` + per-subcommand FlagSets), provider registry, fake-provider hooks. One file per subcommand: [main.go](cmd/aistat/main.go), [usage.go](cmd/aistat/usage.go), [switch.go](cmd/aistat/switch.go) (CLI-private `switchable` interface + `buildSwitchHandles` registry + bulk / single / inferred dispatch), [watch.go](cmd/aistat/watch.go) (`dedupNotifier` + `watchLoop` + `runWatch` — the timer-driven `--if-needed` daemon), [accounts.go](cmd/aistat/accounts.go) (`providerStore` + multi-provider list/remove with id-uniqueness inference).
 - [internal/accounts/](internal/accounts/) — provider-neutral persisted account store. `Account` is opaque identity + metadata + `RawBlob`; provider packages own credential-shape parsing. `Provider` (closed set: `ProviderClaude`, `ProviderCodex`) with `validate()` gating all `OpenStore` calls. Backends: `store_darwin.go` keychain at `aistat:accounts:<provider>:<uuid>` + process flock on `$CACHE/aistat/store.lock`; `store_file.go` (`linux || windows`) JSON at `~/.config/aistat/accounts/<provider>.json` (`%USERPROFILE%\.config\...` on Windows) locking a `.<provider>.lock` sentinel (NOT the data file — survives atomic-rename) via `syscall.Flock` (`store_file_unix.go`) or `winlock.Lock` (`store_file_windows.go`); `MemoryStore` for tests. The shared body exposes a `withLock(exclusive bool, …)` seam so the lock primitive is the only per-OS code.
 - [internal/providers/](internal/providers/) — one subpackage per provider (`claude`, `codex`, `copilot`). Each owns its credential source, HTTP calls, and response normalization into the shared `Limit` type in [types.go](internal/providers/types.go). `AccountResult` lives here too — same type carried on both `ProviderOutput` (in-process) and `ProviderResult` (JSON-serialized).
 - [internal/providers/usagecache/](internal/providers/usagecache/) — provider-neutral 90 s file-backed usage cache. `New(provider, nowFn, warnFn)` validates the provider char-set and writes `$CACHE/aistat/usage/<provider>-v1.json` with `<provider>.cache.lock`. Warn strings include the provider name.
