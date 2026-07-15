@@ -169,6 +169,9 @@ aistat switch claude --watch --interval 120           # claude only, checked eve
 aistat switch --watch --if-above-5h 90 --if-above-weekly off
 ```
 
+<details>
+<summary>launchd (macOS) / systemd (Linux) setup</summary>
+
 **launchd (macOS)** — save as `~/Library/LaunchAgents/com.drogers0.aistat.autoswitch.plist`:
 
 ```xml
@@ -215,6 +218,8 @@ systemctl --user enable --now aistat-autoswitch.service
 ```
 
 `KeepAlive` / `Restart=always` also restart the daemon after a crash or logout — the in-memory notification dedup resets on restart, so you may see one repeat notification right after a restart.
+
+</details>
 
 ## Authentication
 
