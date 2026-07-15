@@ -137,67 +137,73 @@ Auto-pick buckets candidates by 5% (so 87% and 89% are equivalent) and breaks ti
 > [!WARNING]
 > `aistat switch` rotates the credential for the whole device, not per session. Every Claude Code session sharing this credential picks up the new account on its next read — there's no per-session or per-chat isolation.
 
-### Conditional switching (--if-needed)
+### Conditional switching (--if-above-5h / --if-above-weekly)
 
-`aistat switch --if-needed` only switches when the active account has actually crossed a usage threshold — otherwise it prints `no switch needed (<window> at <used>%)` and exits 0 without touching the credential. This is a pre-pass: it checks the active account's own usage first and only fetches every stored account's usage (the auto-pick step) once a threshold is actually crossed.
+Give `aistat switch` a threshold flag and it becomes **conditional**: it only switches when the active account has actually crossed that usage threshold — otherwise it prints `no switch needed (<window> at <used>%)` and exits 0 without touching the credential. This is a pre-pass: it checks the active account's own usage first and only fetches every stored account's usage (the auto-pick step) once a threshold is crossed. The presence of any threshold flag is the opt-in — there is no separate `--if-needed` flag.
+
+```
+aistat switch claude --if-above-5h 85                      # switch only if the 5-hour window is ≥85% used
+aistat switch claude --if-above-5h 90 --if-above-weekly off # 5h at 90%, weekly disabled
+```
 
 Two independent thresholds, checked as used-percent (five-hour is checked before the weekly window):
 
-| Env var | Default | Notes |
-|---|---|---|
-| `AISTAT_IF_ABOVE_5H` | 85 | Triggers on the `five_hour` window |
-| `AISTAT_IF_ABOVE_WEEKLY` | 95 | Triggers on the binding weekly window (`seven_day` / `thirty_day`) |
+| Window | Flag | Env fallback | Default |
+|---|---|---|---|
+| `five_hour` | `--if-above-5h` | `AISTAT_IF_ABOVE_5H` | 85 |
+| weekly (`seven_day` / `thirty_day`) | `--if-above-weekly` | `AISTAT_IF_ABOVE_WEEKLY` | 95 |
 
-Set either to `off` to disable that window as a trigger. Precedence is simply: non-empty process env value, else the built-in default.
+Precedence is per window: an explicit flag wins; otherwise a non-empty env var; otherwise the built-in default. Set any of them to `off` to disable that window as a trigger. Because the env vars are only a *fallback*, you can pin one window with a flag and let the other come from the environment.
 
 Add `--notify` for a desktop notification (macOS only, silent no-op elsewhere) — fired on a successful switch, or when the threshold is hit but no better account is available.
 
-`--if-needed` is mutually exclusive with `--to` (a usage error, exit 2). Like unconditional switch, it fails closed: a fetch or write error exits 1 without mutating the live credential.
+Threshold flags cannot be combined with `--to` (a usage error, exit 2). Like unconditional switch, a conditional switch fails closed: a fetch or write error exits 1 without mutating the live credential.
 
-### Running it in the background (aistat watch)
+### Running it in the background (aistat switch --watch)
 
-`aistat watch` runs the same `--if-needed` check on a timer, in the foreground, with **in-memory notification dedup**: a persistent "no better account" state warns you once, not on every tick. It ticks immediately on startup, then every `--interval` seconds (default 300, minimum 60). You keep it alive with your OS's own service manager — `aistat watch` is not a service-install subcommand, just a long-running foreground loop.
+Add `--watch` (or `-w`) to run the conditional switch on a timer, in the foreground, with **in-memory notification dedup**: a persistent "no better account" state warns you once, not on every tick. It ticks immediately on startup, then every `--interval` seconds (default 300, minimum 60). `--watch` implies conditional mode; with no threshold flag the windows fall back to the env vars / defaults above. You keep it alive with your OS's own service manager — this is not a service-install subcommand, just a long-running foreground loop.
 
 ```
-aistat watch                              # all providers with ≥2 stored accounts, default thresholds
-aistat watch claude --interval 120        # claude only, checked every 2 minutes
-aistat watch --if-above-5h 90 --if-above-weekly off
+aistat switch --watch                                 # all providers with ≥2 stored accounts, env/default thresholds
+aistat switch claude --watch --interval 120           # claude only, checked every 2 minutes
+aistat switch --watch --if-above-5h 90 --if-above-weekly off
 ```
 
-**launchd (macOS)** — save as `~/Library/LaunchAgents/com.drogers0.aistat.watch.plist`:
+**launchd (macOS)** — save as `~/Library/LaunchAgents/com.drogers0.aistat.autoswitch.plist`:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>com.drogers0.aistat.watch</string>
+  <key>Label</key><string>com.drogers0.aistat.autoswitch</string>
   <key>ProgramArguments</key>
   <array>
     <string>/usr/local/bin/aistat</string>
-    <string>watch</string>
+    <string>switch</string>
+    <string>--watch</string>
     <string>--interval</string><string>300</string>
   </array>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>/tmp/aistat-watch.log</string>
-  <key>StandardErrorPath</key><string>/tmp/aistat-watch.log</string>
+  <key>StandardOutPath</key><string>/tmp/aistat-autoswitch.log</string>
+  <key>StandardErrorPath</key><string>/tmp/aistat-autoswitch.log</string>
 </dict>
 </plist>
 ```
 
 ```
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.drogers0.aistat.watch.plist   # start
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.drogers0.aistat.watch.plist      # stop
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.drogers0.aistat.autoswitch.plist   # start
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.drogers0.aistat.autoswitch.plist      # stop
 ```
 
-**systemd (Linux)** — save as `~/.config/systemd/user/aistat-watch.service`:
+**systemd (Linux)** — save as `~/.config/systemd/user/aistat-autoswitch.service`:
 
 ```ini
 [Unit]
 Description=aistat conditional account switcher
 
 [Service]
-ExecStart=/usr/local/bin/aistat watch --interval 300
+ExecStart=/usr/local/bin/aistat switch --watch --interval 300
 Restart=always
 
 [Install]
@@ -205,7 +211,7 @@ WantedBy=default.target
 ```
 
 ```
-systemctl --user enable --now aistat-watch.service
+systemctl --user enable --now aistat-autoswitch.service
 ```
 
 `KeepAlive` / `Restart=always` also restart the daemon after a crash or logout — and the in-memory notification dedup resets on restart, so you may see one repeat notification right after a restart. That's acceptable; the alternative (persisting dedup state to disk) isn't worth the complexity for a warning you'll see once per restart at most.

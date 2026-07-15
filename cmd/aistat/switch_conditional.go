@@ -13,15 +13,15 @@ import (
 
 // switchOpts carries the conditional-switch mode through the dispatch helpers.
 // The zero value means unconditional switch with no notifications — exactly
-// the behavior before --if-needed existed.
+// the behavior before conditional switching existed.
 type switchOpts struct {
-	ifNeeded bool
-	notify   bool
-	th       autoswitch.Thresholds
+	conditional bool
+	notify      bool
+	th          autoswitch.Thresholds
 	// notifier delivers desktop notifications. A nil notifier means "use the
 	// default seam" (sendNotification), so the common path leaves it unset;
-	// watch installs a dedup-wrapping notifier here instead of mutating the
-	// package global at runtime.
+	// `switch --watch` installs a dedup-wrapping notifier here instead of
+	// mutating the package global at runtime.
 	notifier func(context.Context, string, string) error
 }
 

@@ -57,6 +57,10 @@ var (
 
 	// fetchCodexLiveUsage fetches usage limits for the active Codex account.
 	fetchCodexLiveUsage = realFetchCodexLiveUsage
+
+	// watchSleepFn is the interruptible inter-tick wait for `switch --watch`;
+	// overridden by tests to bound the loop.
+	watchSleepFn = sleepWithCtx
 )
 
 // resolveCodexActiveUUID reads the live Codex credential and resolves the
@@ -197,7 +201,7 @@ const (
 const shortKey = "five_hour"
 
 // longKeys are the true account-wide weekly ceilings used by the exhaustion
-// gate, the sustained-headroom tiebreak, and --if-needed's weekly trigger.
+// gate, the sustained-headroom tiebreak, and the conditional weekly trigger.
 // Model-scoped windows (e.g. seven_day_sonnet) are deliberately EXCLUDED and
 // stay informational only: a spent model budget blocks that one model, not
 // the account, so it must not flag the account as exhausted and rank it below
@@ -283,9 +287,15 @@ func runSwitch(args []string, stdout, stderr io.Writer, g globals) int {
 	fs.SetOutput(io.Discard)
 	var toArg string
 	fs.StringVar(&toArg, "to", "", "")
-	var ifNeeded, notifyFlag bool
-	fs.BoolVar(&ifNeeded, "if-needed", false, "")
+	var notifyFlag, watch bool
 	fs.BoolVar(&notifyFlag, "notify", false, "")
+	fs.BoolVar(&watch, "watch", false, "")
+	fs.BoolVar(&watch, "w", false, "")
+	var if5h, ifWeekly string
+	fs.StringVar(&if5h, "if-above-5h", "", "")
+	fs.StringVar(&ifWeekly, "if-above-weekly", "", "")
+	interval := -1 // -1 = unset; an explicit --interval 0 stays a real (invalid) value
+	fs.IntVar(&interval, "interval", -1, "")
 	registerGlobalFlags(fs, &g)
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(stderr, err.Error())
@@ -321,21 +331,49 @@ func runSwitch(args []string, stdout, stderr io.Writer, g globals) int {
 		return int(orchestrate.StatusUsageError)
 	}
 
-	// --if-needed and --to are mutually exclusive modes.
-	if ifNeeded && toArg != "" {
-		fmt.Fprintln(stderr, "--if-needed cannot be combined with --to")
+	// Conditional mode (gate the switch on the active account's usage) is entered
+	// by any threshold flag or --watch. A watch loop is inherently conditional —
+	// an unconditional loop would flap every tick.
+	conditional := if5h != "" || ifWeekly != "" || watch
+
+	// --to targets one explicit account, incompatible with the
+	// gate-then-auto-pick conditional flow.
+	if toArg != "" && (if5h != "" || ifWeekly != "") {
+		fmt.Fprintln(stderr, "threshold flags cannot be combined with --to")
+		return int(orchestrate.StatusUsageError)
+	}
+	if toArg != "" && watch {
+		fmt.Fprintln(stderr, "--watch cannot be combined with --to")
+		return int(orchestrate.StatusUsageError)
+	}
+	if interval != -1 && !watch {
+		fmt.Fprintln(stderr, "--interval requires --watch")
+		return int(orchestrate.StatusUsageError)
+	}
+	effInterval := 300
+	if interval != -1 {
+		effInterval = interval
+	}
+	if watch && effInterval < 60 {
+		fmt.Fprintln(stderr, "--interval must be at least 60 seconds")
 		return int(orchestrate.StatusUsageError)
 	}
 
 	// Resolve thresholds once, before any provider work (fail fast on bad config).
-	opts := switchOpts{ifNeeded: ifNeeded, notify: notifyFlag}
-	if ifNeeded {
-		th, err := autoswitch.Resolve(os.Getenv)
+	// Per window: explicit flag > non-empty env > built-in default.
+	opts := switchOpts{conditional: conditional, notify: notifyFlag || watch}
+	if conditional {
+		fiveHourTh, err := resolveThreshold("if-above-5h", if5h, autoswitch.EnvFiveHour, autoswitch.DefaultFiveHour)
 		if err != nil {
 			fmt.Fprintf(stderr, "aistat: %s\n", err)
 			return int(orchestrate.StatusUsageError)
 		}
-		opts.th = th
+		weeklyTh, err := resolveThreshold("if-above-weekly", ifWeekly, autoswitch.EnvWeekly, autoswitch.DefaultWeekly)
+		if err != nil {
+			fmt.Fprintf(stderr, "aistat: %s\n", err)
+			return int(orchestrate.StatusUsageError)
+		}
+		opts.th = autoswitch.Thresholds{FiveHour: fiveHourTh, Weekly: weeklyTh}
 	}
 
 	// 3. Setup: context, debug writer.
@@ -353,7 +391,25 @@ func runSwitch(args []string, stdout, stderr io.Writer, g globals) int {
 		return int(orchestrate.StatusUsageError)
 	}
 
-	// 5. Route.
+	// 5. Watch mode: run the conditional round on a timer in the foreground,
+	// kept alive by the OS service manager (launchd KeepAlive / systemd
+	// Restart=always). Notifications dedup across ticks so a persistent "no
+	// better account" state warns once, not every tick.
+	if watch {
+		opts.notifier = newDedupNotifier(sendNotification, time.Hour, time.Now)
+		providerDesc := "all providers"
+		if providerArg != "" {
+			providerDesc = providerArg
+		}
+		fmt.Fprintf(stdout, "watching %s every %ds (5h %s, weekly %s)\n",
+			providerDesc, effInterval, watchThresholdDisplay(opts.th.FiveHour), watchThresholdDisplay(opts.th.Weekly))
+		watchLoop(ctx, time.Duration(effInterval)*time.Second, func() {
+			_ = routeConditional(ctx, handles, providerArg, opts, stdout, stderr, debugW)
+		}, watchSleepFn)
+		return 0
+	}
+
+	// 6. One-shot route.
 	if providerArg != "" {
 		h := handleByID(handles, providerArg)
 		return runSwitchSingle(ctx, h, toArg, opts, stdout, stderr, debugW)
@@ -363,12 +419,39 @@ func runSwitch(args []string, stdout, stderr io.Writer, g globals) int {
 	return runSwitchBulk(ctx, handles, opts, stdout, stderr, debugW)
 }
 
-// ifNeededResult carries the outcome of the --if-needed threshold gate back to
-// runSwitchSingle. When proceed is false the caller returns exitCode verbatim;
-// when true, reason/limits feed the downstream "already on best" comparison.
-// stored is always the post-reconcile store re-read so the caller adopts the
-// refreshed slice (a switchable's List returns a fresh header each call).
-type ifNeededResult struct {
+// resolveThreshold picks one window's trigger level: an explicit flag value
+// (parsed here so the error names the flag) shadows env entirely; otherwise
+// non-empty env > built-in default.
+func resolveThreshold(flagName, flagVal, envKey string, def float64) (autoswitch.Threshold, error) {
+	if flagVal != "" {
+		t, err := autoswitch.ParseThreshold(flagVal)
+		if err != nil {
+			return t, fmt.Errorf("--%s: %w", flagName, err)
+		}
+		return t, nil
+	}
+	return autoswitch.ResolveOne(envKey, def, os.Getenv)
+}
+
+// routeConditional dispatches a single conditional round to the right helper:
+// a provider arg targets one provider, otherwise fan out across every provider
+// with ≥2 stored accounts. --to is rejected earlier in conditional mode, so the
+// infer path is never reachable here. Used by the `--watch` tick so a looped
+// switch behaves exactly like the one-shot.
+func routeConditional(ctx context.Context, handles []switchHandle, providerArg string, opts switchOpts, stdout, stderr, debugW io.Writer) int {
+	if providerArg != "" {
+		return runSwitchSingle(ctx, handleByID(handles, providerArg), "", opts, stdout, stderr, debugW)
+	}
+	return runSwitchBulk(ctx, handles, opts, stdout, stderr, debugW)
+}
+
+// conditionalResult carries the outcome of the conditional threshold gate back
+// to runSwitchSingle. When proceed is false the caller returns exitCode
+// verbatim; when true, reason/limits feed the downstream "already on best"
+// comparison. stored is always the post-reconcile store re-read so the caller
+// adopts the refreshed slice (a switchable's List returns a fresh header each
+// call).
+type conditionalResult struct {
 	stored   []accounts.Account
 	reason   string
 	limits   map[string]providers.Limit
@@ -376,11 +459,11 @@ type ifNeededResult struct {
 	exitCode int
 }
 
-// evaluateIfNeeded runs the --if-needed gate for the active account: reconcile
+// evaluateConditional runs the threshold gate for the active account: reconcile
 // the live credential back into the store, re-read it, fetch the active
 // account's usage, and decide whether a switch should proceed. It performs no
 // switch and mutates no live credential itself.
-func (h switchHandle) evaluateIfNeeded(ctx context.Context, stored []accounts.Account, activeUUID string, opts switchOpts, stdout, stderr, debugW io.Writer) ifNeededResult {
+func (h switchHandle) evaluateConditional(ctx context.Context, stored []accounts.Account, activeUUID string, opts switchOpts, stdout, stderr, debugW io.Writer) conditionalResult {
 	// The active account's stored blob goes stale between polls — the upstream
 	// CLI refreshes the live credential in place and only `usage`'s reconcile
 	// syncs it back. Reconcile here (best effort) and re-read the store so
@@ -393,19 +476,19 @@ func (h switchHandle) evaluateIfNeeded(ctx context.Context, stored []accounts.Ac
 	activeAcct := findAccountByUUID(stored, activeUUID)
 	if activeAcct == nil {
 		fmt.Fprintf(stderr, "aistat: %s: cannot determine the active account; skipping conditional switch\n", h.id)
-		return ifNeededResult{stored: stored, exitCode: int(orchestrate.StatusAnyFailed)}
+		return conditionalResult{stored: stored, exitCode: int(orchestrate.StatusAnyFailed)}
 	}
 	limits, err := h.fetchLiveUsage(ctx, h.storedAccess(*activeAcct), activeAcct.UUID, h.ua, debugW)
 	if err != nil {
 		fmt.Fprintf(stderr, "aistat: %s: usage fetch for active account failed: %s\n", h.id, err)
-		return ifNeededResult{stored: stored, exitCode: int(orchestrate.StatusAnyFailed)}
+		return conditionalResult{stored: stored, exitCode: int(orchestrate.StatusAnyFailed)}
 	}
 	reason, triggered := triggerReason(limits, opts.th)
 	if !triggered {
 		fmt.Fprintf(stdout, "no switch needed (%s)\n", usageSummary(limits))
-		return ifNeededResult{stored: stored, exitCode: 0}
+		return conditionalResult{stored: stored, exitCode: 0}
 	}
-	return ifNeededResult{stored: stored, reason: reason, limits: limits, proceed: true}
+	return conditionalResult{stored: stored, reason: reason, limits: limits, proceed: true}
 }
 
 // runSwitchSingle performs a switch for a single provider handle.
@@ -423,25 +506,25 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, opts swi
 		prevEmail = activeAcct.Email
 	}
 
-	// condReason is non-empty iff --if-needed evaluated and triggered;
+	// condReason is non-empty iff the conditional gate evaluated and triggered;
 	// condActiveLimits caches the active account's usage from the gate so the
 	// already-on-best comparison does not refetch.
 	var condReason string
 	var condActiveLimits map[string]providers.Limit
 
-	// notifyNoBetter fires the --if-needed warning at the two "threshold hit
-	// but nothing better" dead ends so the text cannot drift between them.
+	// notifyNoBetter fires the conditional-switch warning at the two "threshold
+	// hit but nothing better" dead ends so the text cannot drift between them.
 	notifyNoBetter := func() {
 		if opts.notify && condReason != "" {
 			notifyBestEffort(ctx, opts.notifier, h.id, condReason+", no better account available", stderr)
 		}
 	}
 
-	// In --if-needed mode the invocation is well-formed by the time provider
+	// In conditional mode the invocation is well-formed by the time provider
 	// work starts, so fetch/write failures are runtime failures (exit 1), not
 	// usage errors (exit 2) — the documented contract for timer-driven polls.
 	failCode := int(orchestrate.StatusUsageError)
-	if opts.ifNeeded {
+	if opts.conditional {
 		failCode = int(orchestrate.StatusAnyFailed)
 	}
 
@@ -469,15 +552,15 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, opts swi
 		// Auto-pick mode: fetch usage for non-active accounts.
 		if len(stored) == 0 {
 			fmt.Fprintf(stderr, "no accounts stored; %s\n", h.loginHint)
-			if opts.ifNeeded {
+			if opts.conditional {
 				// A timer-driven poll with nothing stored is "nothing to do", not misuse.
 				return 0
 			}
 			return int(orchestrate.StatusUsageError)
 		}
 
-		if opts.ifNeeded {
-			r := h.evaluateIfNeeded(ctx, stored, activeUUID, opts, stdout, stderr, debugW)
+		if opts.conditional {
+			r := h.evaluateConditional(ctx, stored, activeUUID, opts, stdout, stderr, debugW)
 			if !r.proceed {
 				return r.exitCode
 			}
@@ -487,7 +570,7 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, opts swi
 		if len(stored) == 1 && stored[0].UUID == activeUUID {
 			notifyNoBetter()
 			fmt.Fprintf(stderr, "only one account stored; nothing to switch to (%s)\n", h.loginHint)
-			if opts.ifNeeded {
+			if opts.conditional {
 				// A timer-driven poll with no alternative is "nothing to do", not misuse.
 				return 0
 			}
@@ -518,7 +601,7 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, opts swi
 		}
 
 		// Compare best candidate with active account ("already on best" check).
-		// fetchLiveUsage is read-only: no store mutation. The --if-needed gate
+		// fetchLiveUsage is read-only: no store mutation. The conditional gate
 		// above already fetched this when it triggered — reuse it instead of
 		// fetching twice.
 		if activeAcct := findAccountByUUID(stored, activeUUID); activeAcct != nil {
