@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -173,32 +172,5 @@ func TestWatchLoop(t *testing.T) {
 	}
 }
 
-// runWatchTest calls runWatch directly with an empty globals struct.
-func runWatchTest(args ...string) runResult {
-	var stdout, stderr bytes.Buffer
-	code := runWatch(args, &stdout, &stderr, globals{})
-	return runResult{stdout.String(), stderr.String(), code}
-}
-
-// TestRunWatchValidation exercises argument validation, which must fail
-// before any store is opened (buildSwitchHandles is never reached).
-func TestRunWatchValidation(t *testing.T) {
-	tests := []struct {
-		name       string
-		args       []string
-		wantExit   int
-		wantStderr string
-	}{
-		{"unknown provider", []string{"bogus"}, 2, `unknown provider "bogus"`},
-		{"interval too low", []string{"--interval", "30"}, 2, "--interval must be at least 60 seconds"},
-		{"invalid 5h threshold", []string{"--if-above-5h", "banana"}, 2, `--if-above-5h: invalid threshold "banana"`},
-		{"invalid weekly threshold", []string{"--if-above-weekly", "200"}, 2, "--if-above-weekly:"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			r := runWatchTest(tt.args...)
-			wantExit(t, r, tt.wantExit)
-			wantErrOut(t, r, tt.wantStderr)
-		})
-	}
-}
+// Watch-entry validation now lives at the switch entry point; see
+// TestSwitchConditional's watch cases in switch_conditional_test.go.

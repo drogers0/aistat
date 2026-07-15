@@ -48,41 +48,41 @@ func TestParseThreshold(t *testing.T) {
 	}
 }
 
-func TestResolve(t *testing.T) {
-	env := func(m map[string]string) func(string) string {
-		return func(k string) string { return m[k] }
+func TestResolveOne(t *testing.T) {
+	env := func(v string) func(string) string {
+		return func(k string) string {
+			if k == EnvFiveHour {
+				return v
+			}
+			return ""
+		}
 	}
 	tests := []struct {
 		name    string
-		env     map[string]string
-		want5h  Threshold
-		wantWk  Threshold
+		envVal  string
+		want    Threshold
 		wantErr string
 	}{
-		{"defaults when nothing set", nil,
-			Threshold{Pct: 85}, Threshold{Pct: 95}, ""},
-		{"env wins over default", map[string]string{EnvFiveHour: "70"},
-			Threshold{Pct: 70}, Threshold{Pct: 95}, ""},
-		{"off via env", map[string]string{EnvWeekly: "off"},
-			Threshold{Pct: 85}, Threshold{Off: true}, ""},
-		{"invalid env value names source", map[string]string{EnvFiveHour: "banana"},
-			Threshold{}, Threshold{}, `AISTAT_IF_ABOVE_5H: invalid threshold "banana": want an integer 1-100 or "off" (source: environment)`},
+		{"default when env unset", "", Threshold{Pct: DefaultFiveHour}, ""},
+		{"env wins over default", "70", Threshold{Pct: 70}, ""},
+		{"off via env", "off", Threshold{Off: true}, ""},
+		{"invalid env value names source", "banana",
+			Threshold{}, `AISTAT_IF_ABOVE_5H: invalid threshold "banana": want an integer 1-100 or "off" (source: environment)`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := Resolve(env(tt.env))
+			got, err := ResolveOne(EnvFiveHour, DefaultFiveHour, env(tt.envVal))
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("Resolve err = %v, want substring %q", err, tt.wantErr)
+					t.Fatalf("ResolveOne err = %v, want substring %q", err, tt.wantErr)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("Resolve unexpected error: %v", err)
+				t.Fatalf("ResolveOne unexpected error: %v", err)
 			}
-			if got.FiveHour != tt.want5h || got.Weekly != tt.wantWk {
-				t.Errorf("Resolve = {FiveHour:%+v Weekly:%+v}, want {FiveHour:%+v Weekly:%+v}",
-					got.FiveHour, got.Weekly, tt.want5h, tt.wantWk)
+			if got != tt.want {
+				t.Errorf("ResolveOne = %+v, want %+v", got, tt.want)
 			}
 		})
 	}

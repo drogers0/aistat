@@ -98,6 +98,15 @@ func runSwitchTest(args ...string) runResult {
 	return runResult{stdout.String(), stderr.String(), code}
 }
 
+// withWatchSleep swaps the watch loop's inter-tick sleep so `switch --watch`
+// tests can bound the loop (returning a non-nil error stops watchLoop).
+func withWatchSleep(t *testing.T, fn func(context.Context, time.Duration) error) {
+	t.Helper()
+	old := watchSleepFn
+	watchSleepFn = fn
+	t.Cleanup(func() { watchSleepFn = old })
+}
+
 // makeLimits builds a Limit map with the given five_hour RemainingPercent.
 func makeLimits(fiveHourRemaining float64) map[string]providers.Limit {
 	return map[string]providers.Limit{

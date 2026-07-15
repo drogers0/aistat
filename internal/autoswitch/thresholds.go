@@ -1,6 +1,7 @@
 // Package autoswitch holds the pure pieces of the conditional-switch feature:
-// threshold resolution (process env > defaults). The cmd layer wires this
-// into `switch --if-needed`.
+// per-window threshold resolution (non-empty process env > built-in default).
+// The cmd layer picks an explicit `--if-above-*` flag over this fallback, and
+// wires the result into `switch`'s conditional / `--watch` modes.
 package autoswitch
 
 import (
@@ -21,8 +22,8 @@ const (
 // Threshold is one window's trigger level. Off (value "off") disables the
 // window as a trigger entirely.
 // The zero value (Pct 0, Off false) means "trigger at 0% used", not
-// "disabled" — Resolve always sets one field explicitly; consumers must not
-// treat Threshold{} as unset.
+// "disabled" — ResolveOne / ParseThreshold always set one field explicitly;
+// consumers must not treat Threshold{} as unset.
 type Threshold struct {
 	Pct float64
 	Off bool
@@ -46,22 +47,11 @@ func ParseThreshold(s string) (Threshold, error) {
 	return Threshold{Pct: float64(n)}, nil
 }
 
-// Resolve determines both thresholds. Precedence per key: non-empty process
-// env > built-in default. Errors name the offending key and source so the
-// user knows which value to fix.
-func Resolve(getenv func(string) string) (Thresholds, error) {
-	fh, err := resolveOne(EnvFiveHour, DefaultFiveHour, getenv)
-	if err != nil {
-		return Thresholds{}, err
-	}
-	wk, err := resolveOne(EnvWeekly, DefaultWeekly, getenv)
-	if err != nil {
-		return Thresholds{}, err
-	}
-	return Thresholds{FiveHour: fh, Weekly: wk}, nil
-}
-
-func resolveOne(key string, def float64, getenv func(string) string) (Threshold, error) {
+// ResolveOne resolves one window's threshold: a non-empty process env value >
+// the built-in default. An invalid env value errors, naming the key and source
+// so the user knows which value to fix. The cmd layer calls this only for
+// windows the user did not pin with an explicit `--if-above-*` flag.
+func ResolveOne(key string, def float64, getenv func(string) string) (Threshold, error) {
 	if v := getenv(key); v != "" {
 		t, err := ParseThreshold(v)
 		if err != nil {

@@ -115,7 +115,7 @@ func seedTwoAccounts(t *testing.T) *accounts.MemoryStore {
 	return ms
 }
 
-func TestSwitchIfNeeded(t *testing.T) {
+func TestSwitchConditional(t *testing.T) {
 	tests := []struct {
 		name string
 		run  func(t *testing.T)
@@ -131,7 +131,7 @@ func TestSwitchIfNeeded(t *testing.T) {
 			})
 			written, _ := withWriteBlob(t)
 			notes := withNotifyCapture(t)
-			r := runSwitchTest("claude", "--if-needed", "--notify")
+			r := runSwitchTest("claude", "--if-above-5h", "85", "--if-above-weekly", "95", "--notify")
 			wantExit(t, r, 0)
 			wantOut(t, r, "no switch needed (five_hour at 42%)")
 			if len(*written) != 0 {
@@ -144,7 +144,7 @@ func TestSwitchIfNeeded(t *testing.T) {
 		{"gate reconciles before reading the store", func(t *testing.T) {
 			// The active account's stored token goes stale between polls (Claude
 			// Code refreshes the live credential in place; only `aistat usage`'s
-			// reconcile syncs the store copy back). The --if-needed gate must
+			// reconcile syncs the store copy back). The conditional gate must
 			// reconcile before it fetches the active account's usage, or a stale
 			// stored token 401-loops forever. Order proof: the fetch closure below
 			// asserts reconcileCalled is already true by the time it runs.
@@ -158,7 +158,7 @@ func TestSwitchIfNeeded(t *testing.T) {
 				}
 				return makeLimitsFull(map[string]float64{"five_hour": 58, "seven_day": 50}), nil
 			})
-			r := runSwitchTest("claude", "--if-needed")
+			r := runSwitchTest("claude", "--if-above-5h", "85", "--if-above-weekly", "95")
 			wantExit(t, r, 0)
 			wantOut(t, r, "no switch needed")
 		}},
@@ -198,7 +198,7 @@ func TestSwitchIfNeeded(t *testing.T) {
 				return makeLimitsFull(map[string]float64{"five_hour": 58, "seven_day": 50}), nil
 			})
 
-			r := runSwitchTest("claude", "--if-needed")
+			r := runSwitchTest("claude", "--if-above-5h", "85", "--if-above-weekly", "95")
 			wantExit(t, r, 0)
 			wantOut(t, r, "no switch needed")
 			if seenToken != "fresh-token" {
@@ -218,7 +218,7 @@ func TestSwitchIfNeeded(t *testing.T) {
 			}})
 			written, _ := withWriteBlob(t)
 			notes := withNotifyCapture(t)
-			r := runSwitchTest("claude", "--if-needed", "--notify")
+			r := runSwitchTest("claude", "--if-above-5h", "85", "--if-above-weekly", "95", "--notify")
 			wantExit(t, r, 0)
 			wantOut(t, r, "switched to personal@example.com")
 			if len(*written) == 0 {
@@ -240,7 +240,7 @@ func TestSwitchIfNeeded(t *testing.T) {
 			}})
 			_, _ = withWriteBlob(t)
 			notes := withNotifyCapture(t)
-			r := runSwitchTest("claude", "--if-needed", "--notify")
+			r := runSwitchTest("claude", "--if-above-5h", "85", "--if-above-weekly", "95", "--notify")
 			wantExit(t, r, 0)
 			wantOut(t, r, "switched to personal@example.com")
 			if len(*notes) != 1 || (*notes)[0] != "Claude: switched to personal@example.com (seven_day at 96%)" {
@@ -259,7 +259,7 @@ func TestSwitchIfNeeded(t *testing.T) {
 			}})
 			written, _ := withWriteBlob(t)
 			notes := withNotifyCapture(t)
-			r := runSwitchTest("claude", "--if-needed", "--notify")
+			r := runSwitchTest("claude", "--if-above-5h", "85", "--if-above-weekly", "95", "--notify")
 			wantExit(t, r, 0)
 			wantOut(t, r, "already on best account (work@example.com)")
 			if len(*written) != 0 {
@@ -279,7 +279,7 @@ func TestSwitchIfNeeded(t *testing.T) {
 			// Stub so the unconditional reconcile doesn't touch the real Claude client.
 			withSwitchClient(t, &stubSwitchClient{})
 			written, _ := withWriteBlob(t)
-			r := runSwitchTest("claude", "--if-needed")
+			r := runSwitchTest("claude", "--if-above-5h", "85", "--if-above-weekly", "95")
 			wantExit(t, r, 1)
 			wantErrOut(t, r, "cannot determine the active account; skipping conditional switch")
 			if len(*written) != 0 {
@@ -294,7 +294,7 @@ func TestSwitchIfNeeded(t *testing.T) {
 			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
 				return nil, errors.New("boom")
 			})
-			r := runSwitchTest("claude", "--if-needed")
+			r := runSwitchTest("claude", "--if-above-5h", "85", "--if-above-weekly", "95")
 			wantExit(t, r, 1)
 			wantErrOut(t, r, "usage fetch for active account failed")
 		}},
@@ -306,21 +306,24 @@ func TestSwitchIfNeeded(t *testing.T) {
 			})
 			withSwitchClient(t, &stubSwitchClient{fetchErr: errors.New("network blip")})
 			written, _ := withWriteBlob(t)
-			r := runSwitchTest("claude", "--if-needed")
+			r := runSwitchTest("claude", "--if-above-5h", "85", "--if-above-weekly", "95")
 			wantExit(t, r, 1)
 			wantErrOut(t, r, "auto-pick usage fetch failed")
 			if len(*written) != 0 {
 				t.Errorf("live blob written despite fetch error: %s", *written)
 			}
 		}},
-		{"if-needed with to is a usage error", func(t *testing.T) {
-			r := runSwitchTest("claude", "--if-needed", "--to", "work")
+		{"threshold flag with --to is a usage error", func(t *testing.T) {
+			r := runSwitchTest("claude", "--if-above-5h", "85", "--to", "work")
 			wantExit(t, r, 2)
-			wantErrOut(t, r, "--if-needed cannot be combined with --to")
+			wantErrOut(t, r, "threshold flags cannot be combined with --to")
 		}},
 		{"invalid env threshold is a usage error", func(t *testing.T) {
+			// The weekly flag trips conditional mode; the 5h window falls back to
+			// the (malformed) env value, so the env parse error surfaces.
+			clearThresholdEnv(t)
 			t.Setenv(autoswitch.EnvFiveHour, "banana")
-			r := runSwitchTest("claude", "--if-needed")
+			r := runSwitchTest("claude", "--if-above-weekly", "95")
 			wantExit(t, r, 2)
 			wantErrOut(t, r, "(source: environment)")
 		}},
@@ -336,7 +339,9 @@ func TestSwitchIfNeeded(t *testing.T) {
 				{UUID: "uuid-personal", Email: "personal@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 90, "seven_day": 80})},
 			}})
 			_, _ = withWriteBlob(t)
-			r := runSwitchTest("claude", "--if-needed")
+			// No 5h flag → the 5h window falls back to env (50); the weekly flag
+			// only trips conditional mode. 55% used ≥ 50 → switch.
+			r := runSwitchTest("claude", "--if-above-weekly", "95")
 			wantExit(t, r, 0)
 			wantOut(t, r, "switched to personal@example.com")
 		}},
@@ -349,7 +354,8 @@ func TestSwitchIfNeeded(t *testing.T) {
 			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
 				return makeLimitsFull(map[string]float64{"five_hour": 1, "seven_day": 50}), nil
 			})
-			r := runSwitchTest("claude", "--if-needed")
+			// 5h from env = off; weekly flag trips conditional. No trigger.
+			r := runSwitchTest("claude", "--if-above-weekly", "95")
 			wantExit(t, r, 0)
 			wantOut(t, r, "no switch needed (five_hour at 99%)")
 		}},
@@ -363,7 +369,7 @@ func TestSwitchIfNeeded(t *testing.T) {
 				return makeLimitsFull(map[string]float64{"five_hour": 58, "seven_day": 50}), nil
 			})
 			written, _ := withWriteBlob(t)
-			r := runSwitchTest("--if-needed")
+			r := runSwitchTest("--if-above-5h", "85", "--if-above-weekly", "95")
 			wantExit(t, r, 0)
 			wantOut(t, r, "[claude]")
 			wantOut(t, r, "no switch needed (five_hour at 42%)")
@@ -390,7 +396,7 @@ func TestSwitchIfNeeded(t *testing.T) {
 			})
 			written, _ := withWriteBlob(t)
 			notes := withNotifyCapture(t)
-			r := runSwitchTest("claude", "--if-needed", "--notify")
+			r := runSwitchTest("claude", "--if-above-5h", "85", "--if-above-weekly", "95", "--notify")
 			wantExit(t, r, 0)
 			wantErrOut(t, r, "only one account stored; nothing to switch to")
 			if len(*notes) != 1 || (*notes)[0] != "Claude: five_hour at 87%, no better account available" {
@@ -400,14 +406,51 @@ func TestSwitchIfNeeded(t *testing.T) {
 				t.Errorf("live blob written despite single-account dead end: %s", *written)
 			}
 		}},
-		{"if-needed with nothing stored is nothing to do", func(t *testing.T) {
+		{"threshold flag with nothing stored is nothing to do", func(t *testing.T) {
 			// A timer-driven poll against a provider with no stored accounts is a
 			// no-op, not misuse — exit 0, same as the single-account dead end.
+			clearThresholdEnv(t)
 			withMemoryStore(t)          // empty store
 			withSwitchActiveUUID(t, "") // no active account to resolve
-			r := runSwitchTest("claude", "--if-needed")
+			r := runSwitchTest("claude", "--if-above-5h", "85")
 			wantExit(t, r, 0)
 			wantErrOut(t, r, "no accounts stored")
+		}},
+		{"codex below threshold prints no switch needed", func(t *testing.T) {
+			// runSwitchSingle is provider-generic; this covers the codex handle
+			// wiring (its own store, active-uuid, and fetch seams) end to end.
+			clearThresholdEnv(t)
+			ms := withCodexMemoryStore(t)
+			now := time.Now()
+			seedCodexAccount(t, ms, "uuid-cwork", "cwork@example.com", "plan", now.Add(-2*time.Hour))
+			seedCodexAccount(t, ms, "uuid-cpersonal", "cpersonal@example.com", "plan", now.Add(-1*time.Hour))
+			withCodexActiveUUID(t, "uuid-cwork")
+			withCodexSwitchClient(t, &stubCodexSwitchClient{})
+			withCodexFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
+				return makeLimitsFull(map[string]float64{"five_hour": 58, "seven_day": 50}), nil
+			})
+			r := runSwitchTest("codex", "--if-above-5h", "85", "--if-above-weekly", "95")
+			wantExit(t, r, 0)
+			wantOut(t, r, "no switch needed (five_hour at 42%)")
+		}},
+		{"codex triggered switches to the better account", func(t *testing.T) {
+			clearThresholdEnv(t)
+			ms := withCodexMemoryStore(t)
+			now := time.Now()
+			seedCodexAccount(t, ms, "uuid-cwork", "cwork@example.com", "plan", now.Add(-2*time.Hour))
+			seedCodexAccount(t, ms, "uuid-cpersonal", "cpersonal@example.com", "plan", now.Add(-1*time.Hour))
+			withCodexActiveUUID(t, "uuid-cwork")
+			withCodexFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
+				return makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50}), nil
+			})
+			withCodexSwitchClient(t, &stubCodexSwitchClient{fetchResults: []providers.AccountResult{
+				{UUID: "uuid-cwork", Email: "cwork@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50})},
+				{UUID: "uuid-cpersonal", Email: "cpersonal@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 90, "seven_day": 80})},
+			}})
+			_, _ = withCodexWriteBlob(t)
+			r := runSwitchTest("codex", "--if-above-5h", "85", "--if-above-weekly", "95")
+			wantExit(t, r, 0)
+			wantOut(t, r, "switched to cpersonal@example.com")
 		}},
 		{"to with notify sends plain notification", func(t *testing.T) {
 			seedTwoAccounts(t)
@@ -435,7 +478,7 @@ func TestSwitchIfNeeded(t *testing.T) {
 			old := sendNotification
 			sendNotification = func(_ context.Context, _, _ string) error { return errors.New("osascript exploded") }
 			t.Cleanup(func() { sendNotification = old })
-			r := runSwitchTest("claude", "--if-needed", "--notify")
+			r := runSwitchTest("claude", "--if-above-5h", "85", "--if-above-weekly", "95", "--notify")
 			wantExit(t, r, 0)
 			wantOut(t, r, "switched to personal@example.com")
 			wantErrOut(t, r, "notification failed")
@@ -452,11 +495,168 @@ func TestSwitchIfNeeded(t *testing.T) {
 			}})
 			_, _ = withWriteBlob(t)
 			notes := withNotifyCapture(t)
-			r := runSwitchTest("claude", "--if-needed")
+			r := runSwitchTest("claude", "--if-above-5h", "85", "--if-above-weekly", "95")
 			wantExit(t, r, 0)
 			if len(*notes) != 0 {
 				t.Errorf("unexpected notifications without --notify: %v", *notes)
 			}
+		}},
+		{"flag shadows env for its window", func(t *testing.T) {
+			// Env would trigger at ≥50, but the explicit --if-above-5h flag (90)
+			// shadows env entirely: 55% used < 90 → no switch.
+			clearThresholdEnv(t)
+			t.Setenv(autoswitch.EnvFiveHour, "50")
+			seedTwoAccounts(t)
+			withSwitchClient(t, &stubSwitchClient{})
+			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
+				return makeLimitsFull(map[string]float64{"five_hour": 45, "seven_day": 50}), nil
+			})
+			written, _ := withWriteBlob(t)
+			r := runSwitchTest("claude", "--if-above-5h", "90")
+			wantExit(t, r, 0)
+			wantOut(t, r, "no switch needed (five_hour at 55%)")
+			if len(*written) != 0 {
+				t.Errorf("live blob written despite flag shadowing env: %s", *written)
+			}
+		}},
+		// Validation cases (migrated from the removed watch subcommand). All fail
+		// before any store is opened.
+		{"watch with unknown provider", func(t *testing.T) {
+			r := runSwitchTest("bogus", "--watch")
+			wantExit(t, r, 2)
+			wantErrOut(t, r, `unknown provider "bogus"`)
+		}},
+		{"watch interval too low", func(t *testing.T) {
+			r := runSwitchTest("--watch", "--interval", "30")
+			wantExit(t, r, 2)
+			wantErrOut(t, r, "--interval must be at least 60 seconds")
+		}},
+		{"watch invalid 5h threshold", func(t *testing.T) {
+			r := runSwitchTest("--watch", "--if-above-5h", "banana")
+			wantExit(t, r, 2)
+			wantErrOut(t, r, `--if-above-5h: invalid threshold "banana"`)
+		}},
+		{"watch invalid weekly threshold", func(t *testing.T) {
+			r := runSwitchTest("--watch", "--if-above-weekly", "200")
+			wantExit(t, r, 2)
+			wantErrOut(t, r, "--if-above-weekly:")
+		}},
+		{"interval requires watch", func(t *testing.T) {
+			r := runSwitchTest("--interval", "120")
+			wantExit(t, r, 2)
+			wantErrOut(t, r, "--interval requires --watch")
+		}},
+		{"watch cannot combine with to", func(t *testing.T) {
+			r := runSwitchTest("claude", "--watch", "--to", "work")
+			wantExit(t, r, 2)
+			wantErrOut(t, r, "--watch cannot be combined with --to")
+		}},
+		{"watch honors the env-var fallback", func(t *testing.T) {
+			// The crux of #32: no --if-above-5h flag, so the 5h window resolves
+			// from env (50). rc.1's watch hardcoded 85 and would NOT trigger at
+			// 55%; the unified path routes through resolveThreshold and does.
+			clearThresholdEnv(t)
+			t.Setenv(autoswitch.EnvFiveHour, "50")
+			seedTwoAccounts(t)
+			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
+				return makeLimitsFull(map[string]float64{"five_hour": 45, "seven_day": 80}), nil
+			})
+			withSwitchClient(t, &stubSwitchClient{fetchResults: []providers.AccountResult{
+				{UUID: "uuid-work", Email: "work@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 45, "seven_day": 80})},
+				{UUID: "uuid-personal", Email: "personal@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 90, "seven_day": 80})},
+			}})
+			written, _ := withWriteBlob(t)
+			withNotifyCapture(t) // --watch implies --notify; keep osascript out of the test run
+			withWatchSleep(t, func(context.Context, time.Duration) error { return context.Canceled })
+			r := runSwitchTest("claude", "--watch", "--interval", "60")
+			wantExit(t, r, 0)
+			wantOut(t, r, "watching claude every 60s")
+			wantOut(t, r, "switched to personal@example.com")
+			if len(*written) == 0 {
+				t.Error("watch tick did not write the live blob despite env-driven trigger")
+			}
+		}},
+		{"watch happy path ticks once via runSwitchSingle", func(t *testing.T) {
+			clearThresholdEnv(t)
+			seedTwoAccounts(t)
+			withSwitchClient(t, &stubSwitchClient{})
+			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
+				return makeLimitsFull(map[string]float64{"five_hour": 58, "seven_day": 50}), nil
+			})
+			withWatchSleep(t, func(context.Context, time.Duration) error { return context.Canceled })
+			r := runSwitchTest("claude", "--if-above-5h", "85", "--if-above-weekly", "95", "--watch", "--interval", "60")
+			wantExit(t, r, 0)
+			wantOut(t, r, "watching claude every 60s (5h ≥ 85%, weekly ≥ 95%)")
+			wantOut(t, r, "no switch needed (five_hour at 42%)")
+			if strings.Contains(r.stdout, "[claude]") {
+				t.Errorf("scoped watch should route via runSwitchSingle (no bulk header):\n%s", r.stdout)
+			}
+		}},
+		{"scoped watch skips a single-account provider without fetching", func(t *testing.T) {
+			// A provider you can't switch within (only one account) must not incur
+			// a per-tick reconcile + usage fetch — the watch tick short-circuits
+			// like bulk's ≥2 filter.
+			clearThresholdEnv(t)
+			ms := withMemoryStore(t)
+			seedAccount(t, ms, "uuid-work", "work@example.com", "default_claude_max_20x", time.Now())
+			withSwitchActiveUUID(t, "uuid-work")
+			stub := &stubSwitchClient{}
+			withSwitchClient(t, stub)
+			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
+				t.Fatal("usage fetch ran for a single-account provider under --watch")
+				return nil, nil
+			})
+			withWatchSleep(t, func(context.Context, time.Duration) error { return context.Canceled })
+			r := runSwitchTest("claude", "--if-above-5h", "85", "--watch", "--interval", "60")
+			wantExit(t, r, 0)
+			wantOut(t, r, "watching claude every 60s")
+			wantErrOut(t, r, "only one account stored; nothing to switch to")
+			if stub.reconcileCalled {
+				t.Error("ReconcileAndPersist ran despite the <2-account short-circuit")
+			}
+		}},
+		{"scoped watch with no stored accounts skips without fetching", func(t *testing.T) {
+			clearThresholdEnv(t)
+			withMemoryStore(t)          // empty claude store
+			withSwitchActiveUUID(t, "") // no active account
+			stub := &stubSwitchClient{}
+			withSwitchClient(t, stub)
+			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
+				t.Fatal("usage fetch ran for a zero-account provider under --watch")
+				return nil, nil
+			})
+			withWatchSleep(t, func(context.Context, time.Duration) error { return context.Canceled })
+			r := runSwitchTest("claude", "--if-above-5h", "85", "--watch", "--interval", "60")
+			wantExit(t, r, 0)
+			wantErrOut(t, r, "no accounts stored")
+			if stub.reconcileCalled {
+				t.Error("ReconcileAndPersist ran despite the zero-account short-circuit")
+			}
+		}},
+		{"watch bulk tick routes through runSwitchBulk (via -w short flag)", func(t *testing.T) {
+			clearThresholdEnv(t)
+			seedTwoAccounts(t)      // claude: 2 accounts (eligible)
+			withCodexMemoryStore(t) // codex: empty (excluded by the >=2 filter)
+			withSwitchClient(t, &stubSwitchClient{})
+			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
+				return makeLimitsFull(map[string]float64{"five_hour": 58, "seven_day": 50}), nil
+			})
+			withWatchSleep(t, func(context.Context, time.Duration) error { return context.Canceled })
+			r := runSwitchTest("-w", "--if-above-5h", "85", "--if-above-weekly", "95")
+			wantExit(t, r, 0)
+			wantOut(t, r, "watching all providers every 300s")
+			wantOut(t, r, "[claude]") // bulk header proves the runSwitchBulk path
+			wantOut(t, r, "no switch needed (five_hour at 42%)")
+		}},
+		{"watch negative interval is rejected", func(t *testing.T) {
+			r := runSwitchTest("--watch", "--interval", "-1")
+			wantExit(t, r, 2)
+			wantErrOut(t, r, "--interval must be at least 60 seconds")
+		}},
+		{"negative interval without watch requires watch", func(t *testing.T) {
+			r := runSwitchTest("--interval", "-1")
+			wantExit(t, r, 2)
+			wantErrOut(t, r, "--interval requires --watch")
 		}},
 	}
 	for _, tt := range tests {

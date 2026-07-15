@@ -83,6 +83,17 @@ func withCodexActiveUUID(t *testing.T, uuid string) {
 	t.Cleanup(func() { switchLookupCodexActiveUUID = old })
 }
 
+// withCodexFetchLiveUsageFn stubs the codex fetch seam (distinct from claude's
+// fetchLiveUsage), giving the callback the token the gate would send.
+func withCodexFetchLiveUsageFn(t *testing.T, fn func(token string) (map[string]providers.Limit, error)) {
+	t.Helper()
+	old := fetchCodexLiveUsage
+	fetchCodexLiveUsage = func(_ context.Context, token, _, _ string, _ io.Writer) (map[string]providers.Limit, error) {
+		return fn(token)
+	}
+	t.Cleanup(func() { fetchCodexLiveUsage = old })
+}
+
 // seedCodexAccount inserts a Codex-shaped account into ms.
 func seedCodexAccount(t *testing.T, ms *accounts.MemoryStore, uuid, email, plan string, lastSeen time.Time) {
 	t.Helper()
