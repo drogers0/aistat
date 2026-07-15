@@ -610,10 +610,53 @@ func TestSwitchConditional(t *testing.T) {
 			r := runSwitchTest("claude", "--if-above-5h", "85", "--watch", "--interval", "60")
 			wantExit(t, r, 0)
 			wantOut(t, r, "watching claude every 60s")
-			wantErrOut(t, r, "fewer than two stored accounts; nothing to switch")
+			wantErrOut(t, r, "only one account stored; nothing to switch to")
 			if stub.reconcileCalled {
 				t.Error("ReconcileAndPersist ran despite the <2-account short-circuit")
 			}
+		}},
+		{"scoped watch with no stored accounts skips without fetching", func(t *testing.T) {
+			clearThresholdEnv(t)
+			withMemoryStore(t)          // empty claude store
+			withSwitchActiveUUID(t, "") // no active account
+			stub := &stubSwitchClient{}
+			withSwitchClient(t, stub)
+			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
+				t.Fatal("usage fetch ran for a zero-account provider under --watch")
+				return nil, nil
+			})
+			withWatchSleep(t, func(context.Context, time.Duration) error { return context.Canceled })
+			r := runSwitchTest("claude", "--if-above-5h", "85", "--watch", "--interval", "60")
+			wantExit(t, r, 0)
+			wantErrOut(t, r, "no accounts stored")
+			if stub.reconcileCalled {
+				t.Error("ReconcileAndPersist ran despite the zero-account short-circuit")
+			}
+		}},
+		{"watch bulk tick routes through runSwitchBulk (via -w short flag)", func(t *testing.T) {
+			clearThresholdEnv(t)
+			seedTwoAccounts(t)      // claude: 2 accounts (eligible)
+			withCodexMemoryStore(t) // codex: empty (excluded by the >=2 filter)
+			withSwitchClient(t, &stubSwitchClient{})
+			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
+				return makeLimitsFull(map[string]float64{"five_hour": 58, "seven_day": 50}), nil
+			})
+			withWatchSleep(t, func(context.Context, time.Duration) error { return context.Canceled })
+			r := runSwitchTest("-w", "--if-above-5h", "85", "--if-above-weekly", "95")
+			wantExit(t, r, 0)
+			wantOut(t, r, "watching all providers every 300s")
+			wantOut(t, r, "[claude]") // bulk header proves the runSwitchBulk path
+			wantOut(t, r, "no switch needed (five_hour at 42%)")
+		}},
+		{"watch negative interval is rejected", func(t *testing.T) {
+			r := runSwitchTest("--watch", "--interval", "-1")
+			wantExit(t, r, 2)
+			wantErrOut(t, r, "--interval must be at least 60 seconds")
+		}},
+		{"negative interval without watch requires watch", func(t *testing.T) {
+			r := runSwitchTest("--interval", "-1")
+			wantExit(t, r, 2)
+			wantErrOut(t, r, "--interval requires --watch")
 		}},
 	}
 	for _, tt := range tests {

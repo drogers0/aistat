@@ -18,7 +18,7 @@ aistat switch <provider> --if-above-weekly <N|off>   # presence of ANY threshold
 aistat switch <provider> --if-above-5h 90 --notify   # + desktop notification on switch or on a hit with no better account (macOS)
                                         # threshold precedence per window: flag > env AISTAT_IF_ABOVE_5H / AISTAT_IF_ABOVE_WEEKLY > default 85/95; "off" disables a window
 
-aistat switch <provider> --watch       # run the conditional switch on a timer in the foreground (implies conditional; dedup'd notifications); daemonize via launchd/systemd
+aistat switch <provider> --watch       # run the conditional switch on a timer in the foreground (implies conditional; always notifies, dedup'd across ticks); daemonize via launchd/systemd
                                         # --watch/-w + --interval (default 300s, min 60); with no threshold flag the windows fall back to env/default
 
 aistat accounts list                   # list every provider's stored accounts (JSON: {claude:[...], codex:[...]}; text -h: section headers)

@@ -161,7 +161,7 @@ Threshold flags cannot be combined with `--to` (a usage error, exit 2). Like unc
 
 ### Running it in the background (aistat switch --watch)
 
-Add `--watch` (or `-w`) to run the conditional switch on a timer, in the foreground, with **in-memory notification dedup**: a persistent "no better account" state warns you once, not on every tick. It ticks immediately on startup, then every `--interval` seconds (default 300, minimum 60). `--watch` implies conditional mode; with no threshold flag the windows fall back to the env vars / defaults above. You keep it alive with your OS's own service manager — this is not a service-install subcommand, just a long-running foreground loop.
+Add `--watch` (or `-w`) to run the conditional switch on a timer, in the foreground. `--watch` always notifies (there is no silent watch mode), with **in-memory notification dedup** so a persistent "no better account" state warns you once, not on every tick. It ticks immediately on startup, then every `--interval` seconds (default 300, minimum 60). `--watch` implies conditional mode; with no threshold flag the windows fall back to the env vars / defaults above. You keep it alive with your OS's own service manager — this is not a service-install subcommand, just a long-running foreground loop.
 
 ```
 aistat switch --watch                                 # all providers with ≥2 stored accounts, env/default thresholds

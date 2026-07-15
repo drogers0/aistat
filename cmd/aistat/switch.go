@@ -200,6 +200,14 @@ const (
 
 const shortKey = "five_hour"
 
+// Dead-end messages for a provider that cannot be switched (Fprintf formats with
+// h.loginHint). Shared by runSwitchSingle's one-shot checks and routeConditional's
+// watch-tick short-circuit so the wording stays a single source of truth.
+const (
+	msgNoAccountsStored = "no accounts stored; %s\n"
+	msgOnlyOneAccount   = "only one account stored; nothing to switch to (%s)\n"
+)
+
 // longKeys are the true account-wide weekly ceilings used by the exhaustion
 // gate, the sustained-headroom tiebreak, and the conditional weekly trigger.
 // Model-scoped windows (e.g. seven_day_sonnet) are deliberately EXCLUDED and
@@ -294,8 +302,8 @@ func runSwitch(args []string, stdout, stderr io.Writer, g globals) int {
 	var if5h, ifWeekly string
 	fs.StringVar(&if5h, "if-above-5h", "", "")
 	fs.StringVar(&ifWeekly, "if-above-weekly", "", "")
-	interval := -1 // -1 = unset; an explicit --interval 0 stays a real (invalid) value
-	fs.IntVar(&interval, "interval", -1, "")
+	var interval int
+	fs.IntVar(&interval, "interval", 300, "")
 	registerGlobalFlags(fs, &g)
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(stderr, err.Error())
@@ -346,15 +354,20 @@ func runSwitch(args []string, stdout, stderr io.Writer, g globals) int {
 		fmt.Fprintln(stderr, "--watch cannot be combined with --to")
 		return int(orchestrate.StatusUsageError)
 	}
-	if interval != -1 && !watch {
+	// Detect an explicit --interval by presence, not a value sentinel, so a
+	// nonsensical --interval -1 still hits the <60 floor (fs.Visit accumulates
+	// across both fs.Parse calls of the two-pass parse).
+	intervalSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "interval" {
+			intervalSet = true
+		}
+	})
+	if intervalSet && !watch {
 		fmt.Fprintln(stderr, "--interval requires --watch")
 		return int(orchestrate.StatusUsageError)
 	}
-	effInterval := 300
-	if interval != -1 {
-		effInterval = interval
-	}
-	if watch && effInterval < 60 {
+	if watch && interval < 60 {
 		fmt.Fprintln(stderr, "--interval must be at least 60 seconds")
 		return int(orchestrate.StatusUsageError)
 	}
@@ -405,8 +418,8 @@ func runSwitch(args []string, stdout, stderr io.Writer, g globals) int {
 			providerDesc = providerArg
 		}
 		fmt.Fprintf(stdout, "watching %s every %ds (5h %s, weekly %s)\n",
-			providerDesc, effInterval, watchThresholdDisplay(opts.th.FiveHour), watchThresholdDisplay(opts.th.Weekly))
-		watchLoop(ctx, time.Duration(effInterval)*time.Second, func() {
+			providerDesc, interval, watchThresholdDisplay(opts.th.FiveHour), watchThresholdDisplay(opts.th.Weekly))
+		watchLoop(ctx, time.Duration(interval)*time.Second, func() {
 			_ = routeConditional(ctx, handles, providerArg, opts, stdout, stderr, debugW)
 		}, watchSleepFn)
 		return 0
@@ -454,7 +467,13 @@ func routeConditional(ctx context.Context, handles []switchHandle, providerArg s
 		return int(orchestrate.StatusAnyFailed)
 	}
 	if len(stored) < 2 {
-		fmt.Fprintf(stderr, "fewer than two stored accounts; nothing to switch (%s)\n", h.loginHint)
+		// Same dead ends as runSwitchSingle — the guard just reaches them without
+		// the per-tick reconcile + usage fetch.
+		if len(stored) == 0 {
+			fmt.Fprintf(stderr, msgNoAccountsStored, h.loginHint)
+		} else {
+			fmt.Fprintf(stderr, msgOnlyOneAccount, h.loginHint)
+		}
 		return 0
 	}
 	return runSwitchSingle(ctx, h, "", opts, stdout, stderr, debugW)
@@ -566,7 +585,7 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, opts swi
 	} else {
 		// Auto-pick mode: fetch usage for non-active accounts.
 		if len(stored) == 0 {
-			fmt.Fprintf(stderr, "no accounts stored; %s\n", h.loginHint)
+			fmt.Fprintf(stderr, msgNoAccountsStored, h.loginHint)
 			if opts.conditional {
 				// A timer-driven poll with nothing stored is "nothing to do", not misuse.
 				return 0
@@ -584,7 +603,7 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, opts swi
 
 		if len(stored) == 1 && stored[0].UUID == activeUUID {
 			notifyNoBetter()
-			fmt.Fprintf(stderr, "only one account stored; nothing to switch to (%s)\n", h.loginHint)
+			fmt.Fprintf(stderr, msgOnlyOneAccount, h.loginHint)
 			if opts.conditional {
 				// A timer-driven poll with no alternative is "nothing to do", not misuse.
 				return 0
