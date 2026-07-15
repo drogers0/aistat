@@ -592,6 +592,29 @@ func TestSwitchConditional(t *testing.T) {
 				t.Errorf("scoped watch should route via runSwitchSingle (no bulk header):\n%s", r.stdout)
 			}
 		}},
+		{"scoped watch skips a single-account provider without fetching", func(t *testing.T) {
+			// A provider you can't switch within (only one account) must not incur
+			// a per-tick reconcile + usage fetch — the watch tick short-circuits
+			// like bulk's ≥2 filter.
+			clearThresholdEnv(t)
+			ms := withMemoryStore(t)
+			seedAccount(t, ms, "uuid-work", "work@example.com", "default_claude_max_20x", time.Now())
+			withSwitchActiveUUID(t, "uuid-work")
+			stub := &stubSwitchClient{}
+			withSwitchClient(t, stub)
+			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
+				t.Fatal("usage fetch ran for a single-account provider under --watch")
+				return nil, nil
+			})
+			withWatchSleep(t, func(context.Context, time.Duration) error { return context.Canceled })
+			r := runSwitchTest("claude", "--if-above-5h", "85", "--watch", "--interval", "60")
+			wantExit(t, r, 0)
+			wantOut(t, r, "watching claude every 60s")
+			wantErrOut(t, r, "fewer than two stored accounts; nothing to switch")
+			if stub.reconcileCalled {
+				t.Error("ReconcileAndPersist ran despite the <2-account short-circuit")
+			}
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.run)

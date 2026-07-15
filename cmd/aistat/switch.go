@@ -363,14 +363,17 @@ func runSwitch(args []string, stdout, stderr io.Writer, g globals) int {
 	// Per window: explicit flag > non-empty env > built-in default.
 	opts := switchOpts{conditional: conditional, notify: notifyFlag || watch}
 	if conditional {
+		// Threshold errors are already source-qualified ("--if-above-5h: …" for a
+		// flag, "AISTAT_IF_ABOVE_5H: … (source: environment)" for env), so they
+		// print bare — no "aistat:" prefix that would double up.
 		fiveHourTh, err := resolveThreshold("if-above-5h", if5h, autoswitch.EnvFiveHour, autoswitch.DefaultFiveHour)
 		if err != nil {
-			fmt.Fprintf(stderr, "aistat: %s\n", err)
+			fmt.Fprintf(stderr, "%s\n", err)
 			return int(orchestrate.StatusUsageError)
 		}
 		weeklyTh, err := resolveThreshold("if-above-weekly", ifWeekly, autoswitch.EnvWeekly, autoswitch.DefaultWeekly)
 		if err != nil {
-			fmt.Fprintf(stderr, "aistat: %s\n", err)
+			fmt.Fprintf(stderr, "%s\n", err)
 			return int(orchestrate.StatusUsageError)
 		}
 		opts.th = autoswitch.Thresholds{FiveHour: fiveHourTh, Weekly: weeklyTh}
@@ -437,12 +440,24 @@ func resolveThreshold(flagName, flagVal, envKey string, def float64) (autoswitch
 // a provider arg targets one provider, otherwise fan out across every provider
 // with ≥2 stored accounts. --to is rejected earlier in conditional mode, so the
 // infer path is never reachable here. Used by the `--watch` tick so a looped
-// switch behaves exactly like the one-shot.
+// switch behaves exactly like the one-shot. A scoped provider with <2 stored
+// accounts is short-circuited (mirroring runSwitchBulk's ≥2 filter) so watch
+// does not run a per-tick reconcile + usage fetch it can never act on.
 func routeConditional(ctx context.Context, handles []switchHandle, providerArg string, opts switchOpts, stdout, stderr, debugW io.Writer) int {
-	if providerArg != "" {
-		return runSwitchSingle(ctx, handleByID(handles, providerArg), "", opts, stdout, stderr, debugW)
+	if providerArg == "" {
+		return runSwitchBulk(ctx, handles, opts, stdout, stderr, debugW)
 	}
-	return runSwitchBulk(ctx, handles, opts, stdout, stderr, debugW)
+	h := handleByID(handles, providerArg)
+	stored, err := h.store.List(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "aistat: %s: could not list accounts: %s\n", h.id, err)
+		return int(orchestrate.StatusAnyFailed)
+	}
+	if len(stored) < 2 {
+		fmt.Fprintf(stderr, "fewer than two stored accounts; nothing to switch (%s)\n", h.loginHint)
+		return 0
+	}
+	return runSwitchSingle(ctx, h, "", opts, stdout, stderr, debugW)
 }
 
 // conditionalResult carries the outcome of the conditional threshold gate back
