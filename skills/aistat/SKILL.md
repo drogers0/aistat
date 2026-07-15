@@ -4,9 +4,6 @@ description: >-
   Check and manage LLM usage limits (Claude, Codex, Copilot) via the `aistat`
   CLI. Use when the user asks how much headroom they have left, which account
   to use, or to rotate to a fresher account before hitting a limit.
-when_to_use: >-
-  "how much Claude/Codex usage do I have left", "am I about to hit my limit",
-  "which account should I use", "switch me to a fresher account".
 allowed-tools: Bash(aistat usage:*), Bash(aistat accounts list:*)
 ---
 
