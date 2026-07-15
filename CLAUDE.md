@@ -14,7 +14,7 @@ aistat switch <provider>               # target one provider; auto-pick
 aistat switch <provider> --to <id>     # target one provider, one stored account (email or uuid)
 aistat switch --to <id>                # infer provider from id-uniqueness (no provider arg)
 aistat switch <provider> --if-above-5h <N|off>       # conditional: only switch when the active account crosses a threshold, else "no switch needed"
-aistat switch <provider> --if-above-weekly <N|off>   # presence of ANY threshold flag ⟹ conditional (no separate --if-needed flag)
+aistat switch <provider> --if-above-weekly <N|off>   # presence of ANY threshold flag ⟹ conditional
 aistat switch <provider> --if-above-5h 90 --notify   # + desktop notification on switch or on a hit with no better account (macOS)
                                         # threshold precedence per window: flag > env AISTAT_IF_ABOVE_5H / AISTAT_IF_ABOVE_WEEKLY > default 85/95; "off" disables a window
 
