@@ -139,7 +139,7 @@ Auto-pick buckets candidates by 5% (so 87% and 89% are equivalent) and breaks ti
 
 ### Conditional switching (--if-above-5h / --if-above-weekly)
 
-Give `aistat switch` a threshold flag and it becomes **conditional**: it only switches when the active account has actually crossed that usage threshold — otherwise it prints `no switch needed (<window> at <used>%)` and exits 0 without touching the credential. This is a pre-pass: it checks the active account's own usage first and only fetches every stored account's usage (the auto-pick step) once a threshold is crossed. The presence of any threshold flag is the opt-in — there is no separate `--if-needed` flag.
+Give `aistat switch` a threshold flag and it becomes **conditional**: it only switches when the active account has actually crossed that usage threshold — otherwise it prints `no switch needed (<window> at <used>%)` and exits 0 without touching the credential. It checks the active account's own usage first and only fetches every stored account's usage (the auto-pick step) once a threshold is crossed.
 
 ```
 aistat switch claude --if-above-5h 85                      # switch only if the 5-hour window is ≥85% used
@@ -161,7 +161,7 @@ Threshold flags cannot be combined with `--to` (a usage error, exit 2). Like unc
 
 ### Running it in the background (aistat switch --watch)
 
-Add `--watch` (or `-w`) to run the conditional switch on a timer, in the foreground. `--watch` always notifies (there is no silent watch mode), with **in-memory notification dedup** so a persistent "no better account" state warns you once, not on every tick. It ticks immediately on startup, then every `--interval` seconds (default 300, minimum 60). `--watch` implies conditional mode; with no threshold flag the windows fall back to the env vars / defaults above. You keep it alive with your OS's own service manager — this is not a service-install subcommand, just a long-running foreground loop.
+Add `--watch` (or `-w`) to run the conditional switch on a timer, in the foreground. `--watch` always notifies, with **in-memory notification dedup** so a persistent "no better account" state warns you once, not on every tick. It ticks immediately on startup, then every `--interval` seconds (default 300, minimum 60). `--watch` implies conditional mode; with no threshold flag the windows fall back to the env vars / defaults above. You keep it alive with your OS's own service manager — it's a long-running foreground loop.
 
 ```
 aistat switch --watch                                 # all providers with ≥2 stored accounts, env/default thresholds
@@ -214,7 +214,7 @@ WantedBy=default.target
 systemctl --user enable --now aistat-autoswitch.service
 ```
 
-`KeepAlive` / `Restart=always` also restart the daemon after a crash or logout — and the in-memory notification dedup resets on restart, so you may see one repeat notification right after a restart. That's acceptable; the alternative (persisting dedup state to disk) isn't worth the complexity for a warning you'll see once per restart at most.
+`KeepAlive` / `Restart=always` also restart the daemon after a crash or logout — the in-memory notification dedup resets on restart, so you may see one repeat notification right after a restart.
 
 ## Authentication
 
