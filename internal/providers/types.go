@@ -108,7 +108,7 @@ func (r Report) MarshalJSON() ([]byte, error) {
 // Active is intentionally not omitempty — false is meaningful (the account is
 // stored but not currently live). Limits is intentionally NOT omitempty so a
 // successful fetch with zero recognized windows still serializes as
-// `"limits": {}` rather than vanishing — mirrors the Codex/Copilot top-level
+// `"limits": {}` rather than vanishing — mirrors the Copilot top-level
 // contract where `{}` means "asked, got nothing" and `null` means "fetch
 // failed". The per-account fetch sets Limits to a non-nil (possibly empty)
 // map on success and leaves it nil + sets Error on failure. UUID is hidden
@@ -131,11 +131,11 @@ type AccountResult struct {
 // "error" key.
 //
 // Limits serialization depends on whether Accounts is populated:
-//   - Accounts empty (Codex/Copilot path): Limits always serializes —
+//   - Accounts empty (Copilot path): Limits always serializes —
 //     success-with-windows → `"limits": {...}`, zero-windows → `"limits": {}`,
 //     failure → `"limits": null`. `{}` vs `null` lets callers distinguish
 //     "asked, got nothing" from "failed".
-//   - Accounts non-empty (Claude multi-account path): the `limits` key is
+//   - Accounts non-empty (Claude/Codex multi-account path): the `limits` key is
 //     omitted entirely. The active account's limits live in
 //     `accounts[i].limits` where `active == true`; a top-level mirror would
 //     just duplicate that block.
@@ -154,8 +154,8 @@ func (r ProviderResult) MarshalJSON() ([]byte, error) {
 			Error    string          `json:"error,omitempty"`
 		}{Accounts: r.Accounts, Error: r.Error})
 	}
-	// Legacy single-account path (Codex/Copilot, or Claude with no stored
-	// accounts and an immediate fetch error): always include limits.
+	// Flat path (Copilot, or Claude/Codex with no stored accounts and an
+	// immediate fetch error): always include limits.
 	return json.Marshal(struct {
 		Limits map[string]Limit `json:"limits"`
 		Error  string           `json:"error,omitempty"`

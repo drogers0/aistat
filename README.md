@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://github.com/drogers0/aistat/releases/latest"><img src="https://img.shields.io/github/v/release/drogers0/aistat?color=blue" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/drogers0/aistat?color=lightgrey" alt="License: MIT"></a>
-  <a href="https://goreportcard.com/report/github.com/drogers0/aistat/v2"><img src="https://goreportcard.com/badge/github.com/drogers0/aistat/v2" alt="Go Report Card"></a>
+  <a href="https://github.com/drogers0/aistat/actions/workflows/lint.yml"><img src="https://github.com/drogers0/aistat/actions/workflows/lint.yml/badge.svg" alt="Lint"></a>
 </p>
 
 ---
@@ -20,24 +20,25 @@ A command line utility that reads your **Claude**, **Codex**, and **Copilot** us
 $ aistat -h
 Claude usage
 - personal@example.com (active) [Max 5x]
-  - 5-hour: 92.0% (resets in 4h 53m)
-  - 7-day: 71.0% (resets in 2d 5h)
-  - 7-day sonnet: 58.0% (resets in 2d 5h)
-  - 7-day fable: 34.0% (resets in 2d 5h)
+  - 5-hour: 92% (resets in 4h 53m)
+  - 7-day: 71% (resets in 2d 5h)
+  - 7-day sonnet: 58% (resets in 2d 5h)
+  - 7-day fable: 34% (resets in 2d 5h)
 - work@example.com [Max 20x]
-  - 5-hour: 4.0% (resets in 4h 12m)
-  - 7-day: 12.0% (resets in 5d 9h)
+  - 5-hour: 4% (resets in 4h 12m)
+  - 7-day: 12% (resets in 5d 9h)
 
 Codex usage
-- 5-hour: 2.0% (resets in 2h 26m)
-- 7-day: 0.0% (resets in 6d 21h)
-- Code review 7-day: 0.0% (resets in 6d 21h)
+- me@example.com (active)
+  - 5-hour: 2% (resets in 2h 26m)
+  - 7-day: 0% (resets in 6d 21h)
+  - Code review 7-day: 0% (resets in 6d 21h)
 
 Copilot usage
 - month: 67.3% (resets in 5d 1h)
 ```
 
-One command rotates the live Claude credential to the fresh account — no browser round-trip:
+One command rotates the live credential to the fresher account — no browser round-trip:
 
 ```console
 $ aistat switch
@@ -102,20 +103,24 @@ go install github.com/drogers0/aistat/v2/cmd/aistat@latest
 ## Usage
 
 ```bash
-aistat                            # default: same as `aistat usage`
-aistat usage                      # report usage across all providers/accounts
-aistat usage <provider>           # report a single provider (claude | codex | copilot)
-aistat switch                     # auto-switch claude to the account with the most headroom
-aistat switch --to <email|uuid>   # switch to a specific stored claude account
-aistat accounts list              # list stored claude accounts
-aistat accounts remove <id>       # remove a stored claude account (email substring or uuid prefix)
+aistat                                 # default: same as `aistat usage`
+aistat usage [provider]                # report usage for all providers, or one (claude | codex | copilot)
+aistat switch                          # bulk: auto-switch every provider with ≥2 stored accounts to its freshest
+aistat switch <provider>               # switch one provider to the account with the most headroom
+aistat switch <provider> --to <id>     # switch to a specific stored account (email substring or uuid prefix)
+aistat switch <provider> --if-above-5h <N>   # conditional: switch only when a threshold is crossed (see below)
+aistat switch <provider> --watch       # run the conditional switch on a timer, in the foreground
+aistat accounts list [provider]        # list stored accounts (all providers, or one)
+aistat accounts remove <id> [provider] # remove a stored account (provider inferred from id when unambiguous)
 ```
 
-Flags: `-h`/`--human` for text rendering (affects `usage` only), `--refresh` to bypass the per-account Claude usage cache (~90 s TTL, affects `usage` only), `--debug` for per-request diagnostics on stderr, `--version` and `--help` for the obvious.
+Switch and accounts work across Claude and Codex; Copilot is single-account (usage-only). `--to` can omit the provider when the id matches exactly one provider's store.
+
+Flags: `-h`/`--human` for text rendering (affects `usage` and `accounts list`), `--refresh` to bypass the per-account usage cache (~90 s TTL, affects `usage` only), `--debug` for per-request diagnostics on stderr, `--version` and `--help` for the obvious.
 
 ## Multiple accounts
 
-Whichever account is active when you call `aistat` gets stored automatically. After a `claude /login`, the next `aistat usage` adds it alongside the others — no extra setup, no separate command.
+Whichever account is active when you call `aistat` gets stored automatically. After a `claude /login` or `codex login`, the next `aistat usage` adds it alongside the others — no extra setup, no separate command.
 
 `aistat accounts list` shows every stored account, `aistat accounts remove <id>` deletes one (the currently-active account is protected — switch away with `aistat switch --to <email>` or run logout first).
 
@@ -132,10 +137,10 @@ Auto-pick buckets candidates by 5% (so 87% and 89% are equivalent) and breaks ti
 
 
 > [!NOTE]
-> Multi-account support is currently Claude-only — Codex and Copilot ride on whatever single-account credential their upstream CLI writes.
+> Multi-account support covers Claude and Codex — Copilot rides on whatever single-account credential its upstream CLI writes.
 
 > [!WARNING]
-> `aistat switch` rotates the credential for the whole device, not per session. Every Claude Code session sharing this credential picks up the new account on its next read — there's no per-session or per-chat isolation.
+> `aistat switch` rotates the credential for the whole device, not per session. Every session or tool sharing that provider's credential (e.g. all your Claude Code windows) picks up the new account on its next read — there's no per-session or per-chat isolation.
 
 ### Conditional switching (--if-above-5h / --if-above-weekly)
 
@@ -233,7 +238,7 @@ systemctl --user enable --now aistat-autoswitch.service
 
 ## How it works
 
-`aistat` reads the credentials `claude /login`, `codex login`, and `gh auth login` already wrote, makes one authenticated HTTPS call per provider in parallel, and normalizes each response into a uniform `{used_percent, remaining_percent, resets_at}` shape. A failing provider doesn't block the others — its error surfaces in the JSON, and a single per-account hiccup on multi-account Claude doesn't flip the overall exit code. Claude usage is cached for 90 seconds so script-driven polling doesn't burn rate limit.
+`aistat` reads the credentials `claude /login`, `codex login`, and `gh auth login` already wrote, makes one authenticated HTTPS call per provider in parallel, and normalizes each response into a uniform `{used_percent, remaining_percent, resets_at}` shape. A failing provider doesn't block the others — its error surfaces in the JSON, and a single per-account hiccup on a multi-account provider (Claude or Codex) doesn't flip the overall exit code. Per-account usage is cached for 90 seconds so script-driven polling doesn't burn rate limit.
 
 <details>
 <summary>Endpoints, caching, retries, exit codes, and the JSON contract</summary>
@@ -246,7 +251,7 @@ systemctl --user enable --now aistat-autoswitch.service
 | Codex    | `chatgpt.com/backend-api/wham/usage` |
 | Copilot  | `api.github.com/copilot_internal/user` |
 
-**Caching.** Each Claude account's usage response is cached for 90 seconds so back-to-back invocations don't hammer Anthropic's rate limit. `aistat usage --refresh` bypasses the cache; `aistat switch` reads through it, so refresh first if you want a switch decision based on the freshest numbers. Override the TTL with `AISTAT_USAGE_CACHE_TTL=10s` (or any duration). If the cache can't be written, the run proceeds without it.
+**Caching.** Each Claude and Codex account's usage response is cached for 90 seconds so back-to-back invocations don't hammer the upstream rate limits. `aistat usage --refresh` bypasses the cache; `aistat switch` reads through it, so refresh first if you want a switch decision based on the freshest numbers. Override the TTL with `AISTAT_USAGE_CACHE_TTL=10s` (or any duration). If the cache can't be written, the run proceeds without it.
 
 **User-Agent.** The Claude provider sends `User-Agent: claude-code/<version>` on the wire — Anthropic's `/oauth/usage` endpoint aggressively throttles non-`claude-code/` clients ([anthropics/claude-code#31637](https://github.com/anthropics/claude-code/issues/31637)). Override with `AISTAT_CLAUDE_USER_AGENT=<string>` (verbatim, e.g. `aistat/2.1.0`) to opt back into the honest UA. Sibling vars exist for the other providers (`AISTAT_CODEX_USER_AGENT`, `AISTAT_COPILOT_USER_AGENT`); those default to `aistat/<version>` since their endpoints don't currently appear to partition by UA.
 
@@ -293,19 +298,35 @@ The exit code and stdout payload are unaffected — these are heads-ups that the
         { "email": "work@example.com",     "plan": "default_claude_max_20x", "active": false, "limits": {...} }
       ]
     },
-    "codex":   { "limits": {...} },
+    "codex": {
+      "accounts": [
+        { "email": "me@example.com", "plan": "", "active": true, "limits": {...} }
+      ]
+    },
     "copilot": { "limits": { "month": {...} } }
   }
 }
 ```
 
-For Claude, `accounts` is the only view — the row with `active: true` carries the live account's limits. Codex and Copilot stay single-account: each emits a top-level `limits` and no `accounts`. Every `Limit` has the same four fields: `used_percent`, `remaining_percent`, `resets_at` (ISO 8601), `reset_after_seconds`. UUIDs surface in `aistat accounts list` and `aistat switch` output — that's where you read them when you want `accounts remove <uuid-prefix>` or `switch --to <uuid-prefix>`.
+Claude and Codex both use the `accounts` view — an array of per-account rows (even with a single stored account), where the row with `active: true` carries the live account's limits. Copilot stays single-account: it emits a top-level `limits` and no `accounts`. Every `Limit` has the same four fields: `used_percent`, `remaining_percent`, `resets_at` (ISO 8601), `reset_after_seconds`. UUIDs surface in `aistat accounts list` and `aistat switch` output — that's where you read them when you want `accounts remove <uuid-prefix>` or `switch --to <uuid-prefix>`.
 
 </details>
 
+## Use with an AI agent
+
+aistat ships a [Claude Code](https://claude.com/claude-code) skill at [`skills/aistat/`](skills/aistat/) that teaches an agent when to check usage and how to read the JSON, so it can answer "how much headroom do I have?" and rotate accounts on its own. Install it by copying the directory into your skills folder:
+
+```console
+cp -r skills/aistat ~/.claude/skills/          # user-wide
+# or, per project:
+cp -r skills/aistat <your-repo>/.claude/skills/
+```
+
+The skill auto-runs only the read-only `aistat usage` and `aistat accounts list` commands. Anything that mutates the live credential — `aistat switch` — is intentionally left out of its allowed tools, so it still requires your approval.
+
 ## Contributing
 
-Issues and pull requests are welcome. Before opening a PR, run `go test ./...`, `go vet ./...`, and `staticcheck ./...`.
+Issues and pull requests are welcome. Before opening a PR, run `go test ./...`, `go vet ./...`, `staticcheck ./...`, and `golangci-lint run ./...`.
 
 ## Support
 

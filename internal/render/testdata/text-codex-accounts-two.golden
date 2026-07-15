@@ -1,7 +1,7 @@
 Codex usage
 - a@work.com (active)
-  - 5-hour: 10.0% (resets in 1h 0m)
-  - 7-day: 5.0% (resets in 2d 3h)
+  - 5-hour: 10% (resets in 1h 0m)
+  - 7-day: 5% (resets in 2d 3h)
 - b@personal.com
-  - 7-day: 80.0% (resets in 1d 0h)
-  - Code review 7-day: 2.0% (resets in 4d 1h)
+  - 7-day: 80% (resets in 1d 0h)
+  - Code review 7-day: 2% (resets in 4d 1h)

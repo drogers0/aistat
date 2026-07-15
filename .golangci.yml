@@ -1,0 +1,11 @@
+version: "2"
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  exclusions:
+    presets:
+      - std-error-handling # v2 EXC0001: unchecked Fprint*/Close/Flush/os.Remove/os.Setenv
+    rules:
+      - path: _test\.go # test helpers intentionally ignore write/upsert errors
+        linters: [errcheck]
+      - linters: [staticcheck]
+        text: "QF1001" # De Morgan quickfix; not enforced by the pinned standalone staticcheck 2025.1.1
