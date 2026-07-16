@@ -1,12 +1,12 @@
 Claude usage
-- 5-hour: 2.0% (resets in 4h 53m)
-- 7-day: 21.0% (resets in 2d 5h)
-- 7-day sonnet: 0.0% (resets in 2d 5h)
+- 5-hour: 2% (resets in 4h 53m)
+- 7-day: 21% (resets in 2d 5h)
+- 7-day sonnet: 0% (resets in 2d 5h)
 
 Codex usage
-- 5-hour: 0.0% (resets in 3h 12m)
-- 7-day: 11.0% (resets in 4d 1h)
-- Code review 7-day: 0.0% (resets in 4d 1h)
+- 5-hour: 0% (resets in 3h 12m)
+- 7-day: 11% (resets in 4d 1h)
+- Code review 7-day: 0% (resets in 4d 1h)
 
 Copilot usage
-- month: 4.0% (resets in 5d 7h)
+- month: 4% (resets in 5d 7h)

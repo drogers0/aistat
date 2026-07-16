@@ -79,7 +79,7 @@ func TestCLIFakeText(t *testing.T) {
 				t.Fatalf("wrong section order:\n%s", r.stdout)
 			}
 			// Sanity-check one line shape with the design's format.
-			if !regexp.MustCompile(`- 5-hour: \d+\.\d% \(resets in [^\)]+\)`).MatchString(r.stdout) {
+			if !regexp.MustCompile(`- 5-hour: \d+(\.\d)?% \(resets in [^\)]+\)`).MatchString(r.stdout) {
 				t.Fatalf("5-hour line missing or malformed:\n%s", r.stdout)
 			}
 		}},

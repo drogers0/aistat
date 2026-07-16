@@ -26,8 +26,9 @@ func TestText(t *testing.T) {
 		run  func(t *testing.T)
 	}{
 		{"design sample", func(t *testing.T) {
-			// Claude uses the new nested Accounts form; Codex/Copilot use the legacy
-			// flat Limits form. This is the canonical end-to-end rendering demo.
+			// Claude uses the nested Accounts form; this fixture drives Codex and
+			// Copilot through the flat Limits form to exercise both render paths
+			// in one demo (in production Codex also emits Accounts).
 			r := providers.Report{
 				Providers: map[string]providers.ProviderResult{
 					"claude": {
@@ -84,7 +85,7 @@ func TestText(t *testing.T) {
 			}
 			var buf bytes.Buffer
 			_ = Text(&buf, r, []string{"claude"})
-			want := "Claude usage\n- 5-hour: 2.0% (resets in 4h 53m)\n"
+			want := "Claude usage\n- 5-hour: 2% (resets in 4h 53m)\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
 			}
@@ -125,7 +126,7 @@ func TestText(t *testing.T) {
 			}
 			var buf bytes.Buffer
 			_ = Text(&buf, r, []string{"claude", "codex"})
-			want := "Claude usage\n- 5-hour: 2.0% (resets in 4h 0m)\n\nCodex usage: Codex token not found\n"
+			want := "Claude usage\n- 5-hour: 2% (resets in 4h 0m)\n\nCodex usage: Codex token not found\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
 			}
@@ -142,7 +143,7 @@ func TestText(t *testing.T) {
 			}
 			var buf bytes.Buffer
 			_ = Text(&buf, r, []string{"claude"})
-			want := "Claude usage\n- 5-hour: 2.0% (resets in 1h 0m)\n- alpha_extra: 3.0% (resets in 30m)\n- new_window: 5.0% (resets in 2h 0m)\n"
+			want := "Claude usage\n- 5-hour: 2% (resets in 1h 0m)\n- alpha_extra: 3% (resets in 30m)\n- new_window: 5% (resets in 2h 0m)\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
 			}
@@ -164,10 +165,10 @@ func TestText(t *testing.T) {
 			var buf bytes.Buffer
 			_ = Text(&buf, r, []string{"claude"})
 			want := "Claude usage\n" +
-				"- 5-hour: 2.0% (resets in 4h 53m)\n" +
-				"- 7-day: 21.0% (resets in 2d 5h)\n" +
-				"- 7-day sonnet: 0.0% (resets in 2d 5h)\n" +
-				"- 7-day fable: 44.0% (resets in 1d 10h)\n"
+				"- 5-hour: 2% (resets in 4h 53m)\n" +
+				"- 7-day: 21% (resets in 2d 5h)\n" +
+				"- 7-day sonnet: 0% (resets in 2d 5h)\n" +
+				"- 7-day fable: 44% (resets in 1d 10h)\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
 			}
@@ -186,7 +187,7 @@ func TestText(t *testing.T) {
 			}
 			var buf bytes.Buffer
 			_ = Text(&buf, r, []string{"claude"})
-			want := "Claude usage\n- 5-hour: 2.0% (resets in 1h 0m)\n- 7-day fable 5: 15.0% (resets in 2h 0m)\n"
+			want := "Claude usage\n- 5-hour: 2% (resets in 1h 0m)\n- 7-day fable 5: 15% (resets in 2h 0m)\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
 			}
@@ -204,7 +205,7 @@ func TestText(t *testing.T) {
 			}
 			var buf bytes.Buffer
 			_ = Text(&buf, r, []string{"claude"})
-			want := "Claude usage\n- 5-hour: 2.0% (resets in 1h 0m)\n- window_1234s: 9.0% (resets in 1m)\n"
+			want := "Claude usage\n- 5-hour: 2% (resets in 1h 0m)\n- window_1234s: 9% (resets in 1m)\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
 			}
@@ -246,7 +247,7 @@ func TestText(t *testing.T) {
 			}
 			var buf bytes.Buffer
 			_ = Text(&buf, r, []string{"claude"})
-			want := "Claude usage\n- me@example.com (active) [Pro]\n  - 5-hour: 34.0% (resets in 4h 53m)\n"
+			want := "Claude usage\n- me@example.com (active) [Pro]\n  - 5-hour: 34% (resets in 4h 53m)\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
 			}
@@ -303,7 +304,7 @@ func TestText(t *testing.T) {
 			}
 			var buf bytes.Buffer
 			_ = Text(&buf, r, []string{"claude"})
-			want := "Claude usage\n- (live Claude account) (active)\n  - 5-hour: 50.0% (resets in 30m)\n"
+			want := "Claude usage\n- (live Claude account) (active)\n  - 5-hour: 50% (resets in 30m)\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
 			}
@@ -347,7 +348,7 @@ func TestText(t *testing.T) {
 			}
 			var buf bytes.Buffer
 			_ = Text(&buf, r, []string{"claude"})
-			want := "Claude usage\n- x@example.com (active) [default_claude_enterprise]\n  - 5-hour: 1.0% (resets in 1m)\n"
+			want := "Claude usage\n- x@example.com (active) [default_claude_enterprise]\n  - 5-hour: 1% (resets in 1m)\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
 			}
@@ -370,7 +371,7 @@ func TestText(t *testing.T) {
 			}
 			var buf bytes.Buffer
 			_ = Text(&buf, r, []string{"codex"})
-			want := "Codex usage\n- me@example.com (active)\n  - 5-hour: 34.0% (resets in 4h 53m)\n"
+			want := "Codex usage\n- me@example.com (active)\n  - 5-hour: 34% (resets in 4h 53m)\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
 			}
@@ -426,7 +427,7 @@ func TestText(t *testing.T) {
 			}
 			var buf bytes.Buffer
 			_ = Text(&buf, r, []string{"codex"})
-			want := "Codex usage\n- (live Codex account) (active)\n  - 5-hour: 50.0% (resets in 30m)\n"
+			want := "Codex usage\n- (live Codex account) (active)\n  - 5-hour: 50% (resets in 30m)\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
 			}
@@ -451,7 +452,7 @@ func TestText(t *testing.T) {
 			}
 			var buf bytes.Buffer
 			_ = Text(&buf, r, []string{"claude"})
-			want := "Claude usage\n- me@example.com (active) [Max 5x]\n  - 5-hour: 2.0% (resets in 4h 53m)\n  - 7-day fable: 44.0% (resets in 1d 10h)\n"
+			want := "Claude usage\n- me@example.com (active) [Max 5x]\n  - 5-hour: 2% (resets in 4h 53m)\n  - 7-day fable: 44% (resets in 1d 10h)\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
 			}
@@ -501,4 +502,41 @@ func TestFormatResetDuration(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFormatPercent(t *testing.T) {
+	tests := []struct {
+		name string
+		p    float64
+		want string
+	}{
+		{"zero", 0, "0"},
+		{"whole", 92, "92"},
+		{"hundred", 100, "100"},
+		{"one decimal", 92.4, "92.4"},
+		{"sub-one", 0.5, "0.5"},
+		{"boundary rounds to whole", 99.95, "100"}, // 99.95 -> "100.0" -> "100"
+		{"fractional copilot", 73.447, "73.4"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatPercent(tt.p)
+			if got != tt.want {
+				t.Errorf("formatPercent(%v) = %q, want %q", tt.p, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestFormatLimitLineFractional guards the display path that Copilot exercises
+// in production: percent_remaining is a float, so used percentages can be
+// genuinely fractional and the decimal must survive rendering (issue #29).
+func TestFormatLimitLineFractional(t *testing.T) {
+	t.Run("copilot fraction preserved", func(t *testing.T) {
+		got := formatLimitLine("month", mkLimit(73.4, 5*86400))
+		want := "- month: 73.4% (resets in 5d 0h)"
+		if got != want {
+			t.Errorf("formatLimitLine = %q, want %q", got, want)
+		}
+	})
 }

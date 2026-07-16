@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/drogers0/aistat/v2/internal/providers"
@@ -56,7 +57,7 @@ func Text(w io.Writer, r providers.Report, requested []string) error {
 			continue
 		}
 
-		// Legacy flat form: Codex/Copilot, or Claude without Accounts populated.
+		// Legacy flat form: Copilot, or any provider without Accounts populated.
 		if result.Error != "" {
 			sections = append(sections, title+": "+result.Error)
 			continue
@@ -158,7 +159,16 @@ func humanizeWindowKey(key string) string {
 }
 
 func formatLimitLine(label string, l providers.Limit) string {
-	return fmt.Sprintf("- %s: %.1f%% (resets in %s)", label, l.UsedPercent, formatResetDuration(l.ResetAfterSeconds))
+	return fmt.Sprintf("- %s: %s%% (resets in %s)", label, formatPercent(l.UsedPercent), formatResetDuration(l.ResetAfterSeconds))
+}
+
+// formatPercent renders a usage percentage at one-decimal precision but drops a
+// trailing ".0" so whole values read "92" not "92.0". Claude/Codex feed integer
+// utilization (always elided); Copilot's genuine fractions like "67.3" are
+// preserved. Formatting then trimming (rather than an integrality check) is
+// correct at boundaries, e.g. 99.95 -> "100.0" -> "100". See issue #29.
+func formatPercent(p float64) string {
+	return strings.TrimSuffix(strconv.FormatFloat(p, 'f', 1, 64), ".0")
 }
 
 func formatResetDuration(seconds int) string {
