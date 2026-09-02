@@ -265,35 +265,44 @@ func (c *Client) fetchLimitsFresh(ctx context.Context, accessToken string) (map[
 		}
 	}
 
-	// "limits" is Anthropic's migration target for model-scoped weekly limits
-	// (e.g. a "Fable"-scoped weekly window alongside the aggregate seven_day).
-	// Only weekly_scoped entries are surfaced, as seven_day_<model>; session and
-	// weekly_all duplicate five_hour/seven_day above and are skipped, and
+	// "limits" is Anthropic's migration target for account-wide and model-scoped
+	// limits. Account-wide entries fill missing legacy five_hour/seven_day
+	// windows; weekly_scoped entries surface as seven_day_<model>. Top-level
+	// keys win when both forms are present.
+	//
 	// is_active is deliberately NOT a gating condition — scoped limits surface
 	// regardless of which window the API marks active. The key derives from
 	// scope.model.display_name because scope.model.id is null in today's API
 	// responses; if Anthropic renames a model the derived key changes silently
 	// and its render label in internal/render/text.go stops matching — accepted
 	// (these windows are informational-only), revisit when model.id is populated.
-	// Top-level keys win on collision since both can describe the
-	// same window during the migration period. Unlike the whitelist loop above,
-	// a malformed array or an unparseable resets_at is skipped rather than
-	// failing the response: these entries are additive/informational-plus and
-	// must never take five_hour / seven_day down with them.
+	// Unlike the whitelist loop above, a malformed array or an unparseable
+	// resets_at is skipped rather than failing the response: migration entries
+	// must never take valid top-level windows down with them.
 	if rawLimits, ok := raw["limits"]; ok {
 		var scoped []scopedLimit
 		if err := json.Unmarshal(rawLimits, &scoped); err != nil {
 			c.debugf("usage limits array unparseable; scoped windows skipped: %s", err)
 		} else {
 			for _, sl := range scoped {
-				if sl.Kind != "weekly_scoped" {
+				var key string
+				switch sl.Kind {
+				case "session":
+					key = "five_hour"
+				case "weekly_all":
+					key = "seven_day"
+				case "weekly_scoped":
+					if sl.Scope == nil || sl.Scope.Model == nil {
+						continue
+					}
+					key = scopedWindowKey(sl.Scope.Model.DisplayName)
+				default:
 					continue
 				}
-				if sl.Scope == nil || sl.Scope.Model == nil {
-					continue
-				}
-				key := scopedWindowKey(sl.Scope.Model.DisplayName)
 				if key == "" {
+					continue
+				}
+				if _, exists := limits[key]; exists {
 					continue
 				}
 				if sl.ResetsAt == nil {
@@ -301,10 +310,7 @@ func (c *Client) fetchLimitsFresh(ctx context.Context, accessToken string) (map[
 				}
 				resets, secs, err := parseReset(*sl.ResetsAt, now)
 				if err != nil {
-					c.debugf("scoped window %s skipped: unparseable resets_at %q", key, *sl.ResetsAt)
-					continue
-				}
-				if _, exists := limits[key]; exists {
+					c.debugf("limits entry %s skipped: unparseable resets_at %q", key, *sl.ResetsAt)
 					continue
 				}
 				limits[key] = providers.Limit{
