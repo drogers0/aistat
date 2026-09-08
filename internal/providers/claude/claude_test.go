@@ -409,10 +409,47 @@ func TestFetch_parse(t *testing.T) {
 				t.Errorf("seven_day used_percent = %v, want 33", got)
 			}
 		}},
+		{"limits array: account-wide and model windows coexist without legacy fields", func(t *testing.T) {
+			body := []byte(`{"limits":[` +
+				`{"kind":"session","percent":62,"resets_at":"2027-01-01T00:00:00+00:00","scope":null},` +
+				`{"kind":"weekly_all","percent":33,"resets_at":"2027-01-02T00:00:00+00:00","scope":null},` +
+				`{"kind":"weekly_scoped","percent":44,"resets_at":"2027-01-03T00:00:00+00:00","scope":{"model":{"display_name":"Fable"}}}` +
+				`]}`)
+			live := makeCred("tok-live", "ref", 0)
+			store := testutil.MemStore(t, makeAccount("u1", "a@b.com", "tok-live", "ref", 0))
+
+			usageSrv := testutil.NewStubServer(t, body, 200, nil)
+			profileSrv := testutil.RejectServer(t, "profile")
+			refreshSrv := testutil.RejectServer(t, "refresh")
+
+			out, err := buildClient(t, usageSrv, profileSrv, refreshSrv, live, store, nil, nil).Fetch(context.Background())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(out.Accounts) != 1 {
+				t.Fatalf("account count = %d, want 1", len(out.Accounts))
+			}
+			if err := out.Accounts[0].Error; err != "" {
+				t.Fatalf("unexpected account error: %s", err)
+			}
+			limits := out.Accounts[0].Limits
+			if len(limits) != 3 {
+				t.Fatalf("window count = %d, want 3: %v", len(limits), keys(limits))
+			}
+			if got := limits["seven_day_fable"].UsedPercent; got != 44 {
+				t.Errorf("seven_day_fable used_percent = %v, want 44", got)
+			}
+			if got := limits["five_hour"].UsedPercent; got != 62 {
+				t.Errorf("five_hour used_percent = %v, want 62", got)
+			}
+			if got := limits["seven_day"].UsedPercent; got != 33 {
+				t.Errorf("seven_day used_percent = %v, want 33", got)
+			}
+		}},
 		{"limits array: legacy windows win over account-wide fallbacks", func(t *testing.T) {
 			body := []byte(`{"five_hour":{"utilization":10.0,"resets_at":"2027-01-01T00:00:00+00:00"},"limits":[` +
-				`{"kind":"session","percent":62,"resets_at":"2027-01-01T00:00:00+00:00","scope":{"model":{"display_name":"SessionModel"}}},` +
-				`{"kind":"weekly_all","percent":33,"resets_at":"2027-01-01T00:00:00+00:00","scope":{"model":{"display_name":"WeeklyAllModel"}}},` +
+				`{"kind":"session","percent":62,"resets_at":"2027-01-01T00:00:00+00:00","scope":null},` +
+				`{"kind":"weekly_all","percent":33,"resets_at":"2027-01-01T00:00:00+00:00","scope":null},` +
 				`{"kind":"weekly_scoped","percent":44,"resets_at":"2027-01-01T00:00:00+00:00","scope":{"model":{"display_name":"Testmodel"}}}` +
 				`]}`)
 			live := makeCred("tok-live", "ref", 0)
