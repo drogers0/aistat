@@ -93,6 +93,18 @@ func TestCLIHelpVersion(t *testing.T) {
 				wantOut(t, r, id)
 			}
 		}},
+		{"help documents address selectors", func(t *testing.T) {
+			r := runCLI("--help")
+			wantExit(t, r, 0)
+			const flagLine = "  --to <id>          Switch to a specific stored account (address, organization slug, email substring, or UUID prefix)\n"
+			const noteLine = "  --to <id> matches a full address, a unique organization slug, an email substring, or a UUID prefix. Without a provider arg,\n"
+			if !strings.Contains(r.stdout, flagLine) {
+				t.Fatalf("help missing exact flag line %q", flagLine)
+			}
+			if !strings.Contains(r.stdout, noteLine) {
+				t.Fatalf("help missing exact note line %q", noteLine)
+			}
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.run)
@@ -242,7 +254,7 @@ func TestCLISwitch(t *testing.T) {
 			ms := withMemoryStore(t)
 			withCodexMemoryStore(t)
 			seedAccount(t, ms, "uuid-only", "only@example.com", "plan", time.Now())
-			withSwitchActiveUUID(t, "uuid-only")
+			withSwitchActiveKey(t, "uuid-only")
 
 			r := runCLI("switch", "claude")
 			wantExit(t, r, 2)

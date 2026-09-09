@@ -30,8 +30,26 @@ for one. JSON is the default and is what you should parse.
 - If an `accounts` array is present, iterate it and read each row's own
   `limits.<window>` (this is how **Claude and Codex** render — always per-account,
   even with a single stored account; each row carries `email`, `active`, `plan`).
+  Claude rows may additionally carry `address`, `organization_name`, and
+  `organization_type`. Treat these as additive optional fields.
 - Otherwise read `providers.<name>.limits.<window>` directly (this is how
   **Copilot** renders — a single flat map, no `accounts`).
+
+Claude can have several contexts with the same email. The printed full
+`address` is the canonical selector for one of them. A `claude_max` or
+`claude_pro` row uses `<email>/personal-<short-account-id>` and may still carry
+its real organization name and type. A team, unknown, or empty organization
+type uses `<email>/<slug>-<short-org-id>`. The UUID-hex suffix is the identity;
+the slug is cosmetic, and email is only a tie-breaker when duplicate
+organization UUID prefixes require it. `personal-<hex>` is exclusively the
+personal account-UUID form. A unique organization slug, email substring, or
+UUID prefix is also accepted, but use the printed full address when selecting
+among same-email contexts. `accounts list` is where to read it.
+
+After `claude /login`, run `aistat usage` to capture the newly active context.
+Claude organization identity comes from the profile endpoint, not from the
+opaque credential blob. A nil organization is only a defensive wire case, not
+the observed shape of a personal Max response.
 
 Each window carries:
 

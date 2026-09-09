@@ -11,14 +11,11 @@ import (
 	"github.com/drogers0/aistat/v2/internal/providers"
 )
 
-// ReconcileInput is the full input set for Reconcile and ResolveActiveUUID.
-//
-// LookupProfile is called with the live access token when no byte-match is
-// found. It must not be nil when LiveBlob is non-nil. The ctx that scopes the
-// profile call lives at the callsite (e.g. Fetch); the callback intentionally
-// omits ctx so that Reconcile remains a pure function with no I/O of its own.
+// ReconcileInput is the full input set for Reconcile and ResolveActiveKey.
+// LookupProfile is called only when the candidate set cannot identify one
+// canonical slot without profiling.
 type ReconcileInput struct {
-	LiveBlob      *cred.Credential                      // nil if absent; Raw holds exact live bytes
+	LiveBlob      *cred.Credential
 	Stored        []accounts.Account
 	LookupProfile func(accessToken string) (Profile, error)
 	Now           time.Time
@@ -27,158 +24,170 @@ type ReconcileInput struct {
 // ReconcileOutput is the result of a Reconcile call.
 type ReconcileOutput struct {
 	Accounts     []accounts.Account
-	ActiveUUID   string           // "" if none
-	CaptureWarn  string           // non-empty when fallback applied (D1 step 4)
-	Inserted     bool             // true if a new account slot was created
-	Upserted     bool             // true if an existing slot was updated
-	LiveUnstored *cred.Credential // non-nil when fallback applied; render-only
+	ActiveKey    string
+	Promotion    *accounts.Promotion
+	CaptureWarn  string
+	Inserted     bool
+	Upserted     bool
+	LiveUnstored *cred.Credential
 }
 
-// Reconcile executes the full D1 auto-capture decision tree over the live
-// credential and stored account slots. It is a pure function — all I/O
-// (keychain read, profile HTTP call) is pre-resolved and passed via in.
-//
-// The caller is responsible for persisting out.Accounts when out.Inserted or
-// out.Upserted is true.
-//
-// Panics if in.LookupProfile is nil and the live access token does not
-// byte-match any stored slot (findActive will call LookupProfile).
+// Reconcile reconciles the live credential with stored Claude contexts. A
+// legacy token match is intentionally profiled before canonical candidates so
+// a previously interrupted promotion retries independent of Store.List order.
 func Reconcile(in ReconcileInput) ReconcileOutput {
-	out := ReconcileOutput{
-		Accounts: make([]accounts.Account, len(in.Stored)),
-	}
-	// Shallow copy: Account is a value type but RawBlob (json.RawMessage = []byte)
-	// is a reference type. The copy produces independent slice headers; however
-	// the underlying byte arrays of unmodified RawBlob values are shared with
-	// in.Stored. The invariant is "assign, never index-write into an existing
-	// RawBlob": every code path that changes RawBlob assigns a fresh slice
-	// (json.RawMessage(in.LiveBlob.Raw)), it never appends to or mutates the
-	// existing slice in place.
-	copy(out.Accounts, in.Stored)
-
+	out := ReconcileOutput{Accounts: append([]accounts.Account(nil), in.Stored...)}
 	if in.LiveBlob == nil {
-		// D1 branch 3: no live credential; no slot is active this run.
 		return out
 	}
 
-	matchIdx, prof, profileErr := findActive(in)
-
-	switch {
-	case matchIdx >= 0:
-		// D1 branch 1: byte-match. Upsert blob fields without a profile call.
-		// The Claude CLI may rotate refreshToken/expiresAt without changing the
-		// access token, so we always overwrite RawBlob and LastSeenAt.
-		slot := out.Accounts[matchIdx]
-		slot.RawBlob = json.RawMessage(in.LiveBlob.Raw)
-		slot.LastSeenAt = in.Now
-		out.Accounts[matchIdx] = slot
-		out.ActiveUUID = slot.UUID
-		out.Upserted = true
-
-	case profileErr != nil:
-		// D1 branch 4: profile failure. Render an unstored live row instead of
-		// storing; the caller emits CaptureWarn to stderr.
+	selection := selectActive(in)
+	if selection.profileErr != nil {
 		out.LiveUnstored = in.LiveBlob
-		if errors.Is(profileErr, ErrProfileMissingFields) {
-			out.CaptureWarn = "aistat: claude: profile response missing required fields (account.uuid/account.email); rendering live row without storing; file an issue at https://github.com/drogers0/aistat/issues"
-		} else {
-			out.CaptureWarn = fmt.Sprintf(
-				"aistat: claude: could not capture live account profile (%s); rendering live row without storing — run `claude /login` if this persists across runs",
-				profileErr.Error(),
-			)
-		}
-
-	default:
-		// D1 branch 2: profile success. D9 identity-drift: UUID wins; overwrite
-		// email/display_name/rate_limit_tier if they changed.
-		for i, acct := range out.Accounts {
-			if acct.UUID == prof.AccountUUID {
-				slot := out.Accounts[i]
-				slot.Email = prof.Email
-				slot.DisplayName = prof.DisplayName
-				slot.RateLimitTier = prof.RateLimitTier
-				slot.RawBlob = json.RawMessage(in.LiveBlob.Raw)
-				slot.LastSeenAt = in.Now
-				out.Accounts[i] = slot
-				out.ActiveUUID = prof.AccountUUID
-				out.Upserted = true
-				return out
-			}
-		}
-		// No UUID match — insert a new slot keyed by account.uuid.
-		out.Accounts = append(out.Accounts, accounts.Account{
-			UUID:          prof.AccountUUID,
-			Email:         prof.Email,
-			DisplayName:   prof.DisplayName,
-			RateLimitTier: prof.RateLimitTier,
-			LastSeenAt:    in.Now,
-			RawBlob:       json.RawMessage(in.LiveBlob.Raw),
-		})
-		out.ActiveUUID = prof.AccountUUID
-		out.Inserted = true
+		out.CaptureWarn = captureWarning(selection.profileErr)
+		return out
 	}
 
+	if selection.direct >= 0 {
+		out.Accounts[selection.direct] = refreshed(out.Accounts[selection.direct], in.LiveBlob, in.Now)
+		out.ActiveKey = out.Accounts[selection.direct].Key()
+		out.Upserted = true
+		return out
+	}
+
+	if selection.profile.AccountUUID == "" {
+		return out
+	}
+	destination := profiledAccount(selection.profile, in.LiveBlob, in.Now)
+	if selection.legacy >= 0 {
+		source := in.Stored[selection.legacy]
+		instruction := &accounts.Promotion{
+			SourceKey:             source.Key(),
+			ObservedSourceRawBlob: source.RawBlob,
+			Destination:           destination,
+		}
+		if destinationIndex := accountIndex(in.Stored, destination.Key()); destinationIndex >= 0 {
+			instruction.ExpectedDestinationPresent = true
+			instruction.ExpectedDestinationRawBlob = in.Stored[destinationIndex].RawBlob
+		}
+		out.Promotion = instruction
+		out.ActiveKey = source.Key()
+		return out
+	}
+
+	if target := accountIndex(out.Accounts, destination.Key()); target >= 0 {
+		out.Accounts[target] = destination
+		out.ActiveKey = destination.Key()
+		out.Upserted = true
+		return out
+	}
+
+	out.Accounts = append(out.Accounts, destination)
+	out.ActiveKey = destination.Key()
+	out.Inserted = true
 	return out
 }
 
-// ResolveActiveUUID is the read-only D11 variant used by `accounts remove` and
-// `switch`'s identify-current-active step. It shares the byte-match and
-// profile-lookup logic with Reconcile via findActive but never inserts or
-// upserts. The signature pins the no-write guarantee mechanically — the caller
-// cannot accidentally act on Inserted/Upserted because those fields do not
-// exist on this return type.
-//
-// Returns:
-//   - (uuid, nil): byte-match succeeded, or profile call returned a UUID.
-//   - ("", nil): no live blob, 401/403, or ErrProfileMissingFields — the active
-//     account is unresolvable without a recoverable error.
-//   - ("", err): transient or other non-auth, non-missing-fields failure that
-//     the caller may want to surface.
-func ResolveActiveUUID(in ReconcileInput) (string, error) {
+// ResolveActiveKey identifies the stored active slot without writing. A
+// profile-only identity is useful only when its canonical key is already
+// stored; otherwise it must not select an arbitrary token-sharing context.
+func ResolveActiveKey(in ReconcileInput) (string, error) {
 	if in.LiveBlob == nil {
 		return "", nil
 	}
-
-	matchIdx, prof, profileErr := findActive(in)
-
-	if matchIdx >= 0 {
-		return in.Stored[matchIdx].UUID, nil
-	}
-
-	if profileErr != nil {
-		if errors.Is(profileErr, providers.ErrAuthDenied) || errors.Is(profileErr, ErrProfileMissingFields) {
+	selection := selectActive(in)
+	if selection.profileErr != nil {
+		if errors.Is(selection.profileErr, providers.ErrAuthDenied) || errors.Is(selection.profileErr, ErrProfileMissingFields) {
 			return "", nil
 		}
-		return "", profileErr
+		return "", selection.profileErr
 	}
-
-	return prof.AccountUUID, nil
+	if selection.direct >= 0 {
+		return in.Stored[selection.direct].Key(), nil
+	}
+	if selection.legacy >= 0 {
+		return in.Stored[selection.legacy].Key(), nil
+	}
+	if selection.profile.AccountUUID == "" {
+		return "", nil
+	}
+	key := profileKey(selection.profile)
+	if accountIndex(in.Stored, key) >= 0 {
+		return key, nil
+	}
+	return "", nil
 }
 
-// findActive resolves the active account from the live blob without mutating
-// anything in in.Stored. It first scans for a byte-match of the live access
-// token; if no match is found it calls LookupProfile.
-//
-// Returns:
-//   - matchIdx >= 0: index into in.Stored of the byte-matched slot (first match
-//     wins — deterministic on ordered stored slice). No profile call is made.
-//   - matchIdx == -1, profileErr == nil: profile succeeded; prof is populated.
-//   - matchIdx == -1, profileErr != nil: profile call failed.
-//
-// Precondition: in.LiveBlob is non-nil.
-func findActive(in ReconcileInput) (matchIdx int, prof Profile, profileErr error) {
-	// D1 step 1: byte-match. First match wins (pinned behaviour for the
-	// pathological case where two stored slots share an access token).
-	for i, acct := range in.Stored {
-		if StoredAccessToken(acct) == in.LiveBlob.AccessToken {
-			return i, Profile{}, nil
+type activeSelection struct {
+	direct     int
+	legacy     int
+	profile    Profile
+	profileErr error
+}
+
+func selectActive(in ReconcileInput) activeSelection {
+	var legacy, canonical []int
+	for i, account := range in.Stored {
+		if StoredAccessToken(account) != in.LiveBlob.AccessToken {
+			continue
+		}
+		if account.OrganizationUUID == "" {
+			legacy = append(legacy, i)
+		} else {
+			canonical = append(canonical, i)
 		}
 	}
-
-	// D1 step 2: no byte-match — call the profile endpoint.
-	p, err := in.LookupProfile(in.LiveBlob.AccessToken)
-	if err != nil {
-		return -1, Profile{}, err
+	if len(legacy) == 0 && len(canonical) == 1 {
+		return activeSelection{direct: canonical[0], legacy: -1}
 	}
-	return -1, p, nil
+	profile, err := in.LookupProfile(in.LiveBlob.AccessToken)
+	if err != nil {
+		return activeSelection{direct: -1, legacy: -1, profileErr: err}
+	}
+	for _, index := range legacy {
+		if in.Stored[index].UUID == profile.AccountUUID {
+			return activeSelection{direct: -1, legacy: index, profile: profile}
+		}
+	}
+	return activeSelection{direct: -1, legacy: -1, profile: profile}
+}
+
+func accountIndex(stored []accounts.Account, key string) int {
+	for i, account := range stored {
+		if account.Key() == key {
+			return i
+		}
+	}
+	return -1
+}
+
+func profileKey(profile Profile) string {
+	return accounts.Account{UUID: profile.AccountUUID, OrganizationUUID: profile.OrganizationUUID}.Key()
+}
+
+func profiledAccount(profile Profile, live *cred.Credential, now time.Time) accounts.Account {
+	return accounts.Account{
+		UUID:             profile.AccountUUID,
+		Email:            profile.Email,
+		DisplayName:      profile.DisplayName,
+		RateLimitTier:    profile.RateLimitTier,
+		OrganizationUUID: profile.OrganizationUUID,
+		OrganizationName: profile.OrganizationName,
+		OrganizationType: profile.OrganizationType,
+		LastSeenAt:       now,
+		RawBlob:          json.RawMessage(live.Raw),
+	}
+}
+
+func refreshed(account accounts.Account, live *cred.Credential, now time.Time) accounts.Account {
+	account.RawBlob = json.RawMessage(live.Raw)
+	account.LastSeenAt = now
+	return account
+}
+
+func captureWarning(err error) string {
+	if errors.Is(err, ErrProfileMissingFields) {
+		return "aistat: claude: profile response missing required fields (account.uuid/account.email/organization.uuid); rendering live row without storing; file an issue at https://github.com/drogers0/aistat/issues"
+	}
+	return fmt.Sprintf("aistat: claude: could not capture live account profile (%s); rendering live row without storing — run `claude /login` if this persists across runs", err)
 }

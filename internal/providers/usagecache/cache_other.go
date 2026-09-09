@@ -26,19 +26,19 @@ func New(provider string, nowFn func() time.Time, warnFn func(string)) *Cache {
 	return &Cache{provider: provider, warn: warnFn}
 }
 
-func (c *Cache) GetWithAge(uuid string) (map[string]providers.Limit, time.Duration, bool) {
+func (c *Cache) GetWithAge(key string) (map[string]providers.Limit, time.Duration, bool) {
 	c.once.Do(func() {
 		c.warn("aistat: " + c.provider + ": usage cache disabled (platform not supported)")
 	})
 	return nil, 0, false
 }
 
-func (c *Cache) Get(uuid string) (map[string]providers.Limit, bool) {
-	m, _, ok := c.GetWithAge(uuid)
+func (c *Cache) Get(key string) (map[string]providers.Limit, bool) {
+	m, _, ok := c.GetWithAge(key)
 	return m, ok
 }
 
-func (c *Cache) Put(uuid string, limits map[string]providers.Limit) {
+func (c *Cache) Put(key string, limits map[string]providers.Limit) {
 	c.once.Do(func() {
 		c.warn("aistat: " + c.provider + ": usage cache disabled (platform not supported)")
 	})

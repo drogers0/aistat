@@ -3,6 +3,7 @@
 package accounts
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -36,9 +37,9 @@ const (
 )
 
 // darwinPerAccountService returns the per-account keychain service name for
-// the given provider and UUID.
-func darwinPerAccountService(p Provider, uuid string) string {
-	return "aistat:accounts:" + string(p) + ":" + uuid
+// the given provider and opaque key.
+func darwinPerAccountService(p Provider, key string) string {
+	return "aistat:accounts:" + string(p) + ":" + key
 }
 
 // darwinAccountIndexService returns the keychain service name for the index
@@ -51,6 +52,29 @@ type darwinStore struct {
 	provider Provider
 	lockPath string
 	debug    *safeWriter // nil when debug is disabled
+}
+
+type darwinSecurityResult struct {
+	Output []byte
+	Stderr []byte
+	Err    error
+}
+
+var runDarwinSecurity = runDarwinSecurityExec
+
+func runDarwinSecurityExec(ctx context.Context, combined bool, args ...string) darwinSecurityResult {
+	cmd := exec.CommandContext(ctx, "security", args...)
+	if combined {
+		output, err := cmd.CombinedOutput()
+		return darwinSecurityResult{Output: output, Err: err}
+	}
+	output, err := cmd.Output()
+	result := darwinSecurityResult{Output: output, Err: err}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		result.Stderr = exitErr.Stderr
+	}
+	return result
 }
 
 // OpenStore returns the macOS Keychain-backed account store for the given provider.
@@ -101,84 +125,84 @@ func (s *darwinStore) withLock(fn func() error) error {
 	return fn()
 }
 
-// readIndex reads the list of UUIDs from the index keychain item.
+// readIndex reads the list of opaque keys from the index keychain item.
 // Returns a nil slice (not an error) if the index item does not exist.
 func (s *darwinStore) readIndex(ctx context.Context) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "security", "find-generic-password",
+	result := runDarwinSecurity(ctx, false, "find-generic-password",
 		"-s", darwinAccountIndexService(s.provider), "-a", darwinIndexAccount, "-w")
-	out, err := cmd.Output()
-	if err != nil {
-		if darwinIsNotFound(err) {
+	if result.Err != nil {
+		if darwinIsNotFound(result) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("accounts: read index: %w", darwinKeychainErr(err))
+		return nil, fmt.Errorf("accounts: read index: %w", darwinKeychainErr(result))
 	}
-	data := strings.TrimSpace(string(out))
+	data := strings.TrimSpace(string(result.Output))
 	if data == "" {
 		return nil, nil
 	}
 	var idx struct {
+		Keys  []string `json:"keys"`
 		UUIDs []string `json:"uuids"`
 	}
 	if err := json.Unmarshal([]byte(data), &idx); err != nil {
 		return nil, fmt.Errorf("accounts: parse index: %w", err)
 	}
-	return idx.UUIDs, nil
+	return dedupeKeys(append(idx.Keys, idx.UUIDs...)), nil
 }
 
-// writeIndex persists the UUID list as the index keychain item.
+// writeIndex persists the opaque key list as the index keychain item.
 // An empty slice deletes the index item entirely (clean state after final remove).
-func (s *darwinStore) writeIndex(ctx context.Context, uuids []string) error {
-	if len(uuids) == 0 {
+func (s *darwinStore) writeIndex(ctx context.Context, keys []string) error {
+	if len(keys) == 0 {
 		return darwinDeleteItem(ctx, darwinAccountIndexService(s.provider), darwinIndexAccount)
 	}
 	data, err := json.Marshal(struct {
-		UUIDs []string `json:"uuids"`
-	}{UUIDs: uuids})
+		Keys []string `json:"keys"`
+	}{Keys: dedupeKeys(keys)})
 	if err != nil {
 		return err
 	}
 	return darwinWriteItem(ctx, darwinAccountIndexService(s.provider), darwinIndexAccount, string(data))
 }
 
-// darwinReadAccountItem reads the Account JSON for the given UUID.
-// Returns nil, nil if not found. Looks up by service only (no account filter)
-// so that identity-drift email changes (D9) do not break the read path.
-func darwinReadAccountItem(ctx context.Context, p Provider, uuid string) ([]byte, error) {
-	svc := darwinPerAccountService(p, uuid)
-	cmd := exec.CommandContext(ctx, "security", "find-generic-password",
-		"-s", svc, "-w")
-	out, err := cmd.Output()
-	if err != nil {
-		if darwinIsNotFound(err) {
-			return nil, nil
+// darwinReadAccountItem reads the Account JSON for the given opaque key. It
+// reports absent only for a positively classified Keychain absence. Looks up
+// by service only (no account filter) so that identity-drift email changes
+// (D9) do not break the read path.
+func darwinReadAccountItem(ctx context.Context, p Provider, key string) ([]byte, bool, error) {
+	svc := darwinPerAccountService(p, key)
+	result := runDarwinSecurity(ctx, false, "find-generic-password", "-s", svc, "-w")
+	if result.Err != nil {
+		if darwinIsNotFound(result) {
+			return nil, true, nil
 		}
-		return nil, fmt.Errorf("accounts: read account %s: %w", uuid, darwinKeychainErr(err))
+		return nil, false, fmt.Errorf("accounts: read account %s: %w", key, darwinKeychainErr(result))
 	}
-	data := strings.TrimSpace(string(out))
+	data := strings.TrimSpace(string(result.Output))
 	if data == "" {
-		return nil, nil
+		return nil, false, fmt.Errorf("accounts: read account %s: empty keychain value", key)
 	}
-	return []byte(data), nil
+	return []byte(data), false, nil
 }
 
 // upsertAccountItem writes the Account JSON as the per-account keychain item.
 // See darwinWriteItem below for the `-U` upsert semantics. The explicit
 // pre-delete here is NOT redundant after `-U`: it is required for D9 identity
-// drift, where a stored UUID's email may change. `-U` matches by (service,
+// drift, where a stored account's email may change. `-U` matches by (service,
 // account), so a changed email would miss the existing row and silently
 // insert a duplicate. The pre-delete by service only removes the old row first.
 //
 // Failure mode: if the pre-delete succeeds but the subsequent add fails, the
-// per-account item is gone while the UUID may still be in the index. List
-// will surface this as an orphan-in-index warn (aistat: orphan account
-// index entry <uuid>). The next Upsert call recreates the item cleanly.
+// per-account item is gone while its opaque key may still be in the index. A
+// later List silently compacts that positively classified absence on a
+// successful repair. A failed repair leaves the index intact and emits debug
+// diagnostics; the next List can retry the repair.
 func upsertAccountItem(ctx context.Context, p Provider, a Account) error {
-	svc := darwinPerAccountService(p, a.UUID)
+	svc := darwinPerAccountService(p, a.Key())
 	// darwinDeleteItem returns nil for "not found", so this is always safe on
 	// first-time upsert. Propagate any other error (e.g. permission denied).
 	if err := darwinDeleteItem(ctx, svc, ""); err != nil {
-		return fmt.Errorf("accounts: pre-upsert delete of %s: %w", a.UUID, err)
+		return fmt.Errorf("accounts: pre-upsert delete of %s: %w", a.Key(), err)
 	}
 	return darwinWriteItem(ctx, svc, a.Email, string(mustMarshal(a)))
 }
@@ -193,11 +217,11 @@ func upsertAccountItem(ctx context.Context, p Provider, a Account) error {
 // after the first to the same (service, account) — the historical bug that
 // silently dropped index updates after the first Upsert.
 func darwinWriteItem(ctx context.Context, service, account, value string) error {
-	cmd := exec.CommandContext(ctx, "security", "add-generic-password",
+	result := runDarwinSecurity(ctx, true, "add-generic-password",
 		"-U", "-s", service, "-a", account, "-w", value)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if result.Err != nil {
 		return fmt.Errorf("keychain write %s/%s: %s", service, account,
-			strings.TrimSpace(string(out)))
+			strings.TrimSpace(string(result.Output)))
 	}
 	return nil
 }
@@ -209,12 +233,12 @@ func darwinDeleteItem(ctx context.Context, service, account string) error {
 	if account != "" {
 		args = append(args, "-a", account)
 	}
-	cmd := exec.CommandContext(ctx, "security", args...)
-	if _, err := cmd.Output(); err != nil {
-		if darwinIsNotFound(err) {
+	result := runDarwinSecurity(ctx, false, args...)
+	if result.Err != nil {
+		if darwinIsNotFound(result) {
 			return nil
 		}
-		return fmt.Errorf("keychain delete %s: %w", service, darwinKeychainErr(err))
+		return fmt.Errorf("keychain delete %s: %w", service, darwinKeychainErr(result))
 	}
 	return nil
 }
@@ -222,30 +246,37 @@ func darwinDeleteItem(ctx context.Context, service, account string) error {
 func (s *darwinStore) List(ctx context.Context) ([]Account, error) {
 	var accounts []Account
 	err := s.withLock(func() error {
-		uuids, err := s.readIndex(ctx)
+		keys, err := s.readIndex(ctx)
 		if err != nil {
 			return err
 		}
-		for _, uuid := range uuids {
-			data, err := darwinReadAccountItem(ctx, s.provider, uuid)
+		validKeys := make([]string, 0, len(keys))
+		var missingKeys []string
+		for _, key := range keys {
+			data, absent, err := darwinReadAccountItem(ctx, s.provider, key)
 			if err != nil {
 				return err
 			}
-			if data == nil {
-				// Orphan: index entry exists but per-account item is missing.
-				// This can happen if a previous run crashed after updating the
-				// index on Delete (before removing the per-account item). Safe
-				// to skip; List continues with the remaining entries.
-				if s.debug != nil {
-					fmt.Fprintf(s.debug, "aistat: orphan account index entry %s\n", uuid)
-				}
+			if absent {
+				missingKeys = append(missingKeys, key)
 				continue
 			}
 			var a Account
 			if err := json.Unmarshal(data, &a); err != nil {
-				return fmt.Errorf("accounts: parse account %s: %w", uuid, err)
+				return fmt.Errorf("accounts: parse account %s: %w", key, err)
 			}
 			accounts = append(accounts, a)
+			validKeys = append(validKeys, key)
+		}
+		if len(missingKeys) != 0 {
+			if err := s.writeIndex(ctx, validKeys); err != nil {
+				if s.debug != nil {
+					for _, key := range missingKeys {
+						fmt.Fprintf(s.debug, "aistat: orphan account index entry %s\n", key)
+					}
+					fmt.Fprintf(s.debug, "aistat: could not repair orphan account index entries (%s)\n", err)
+				}
+			}
 		}
 		return nil
 	})
@@ -263,68 +294,164 @@ func (s *darwinStore) Upsert(ctx context.Context, a Account) error {
 		if err := upsertAccountItem(ctx, s.provider, a); err != nil {
 			return err
 		}
-		uuids, err := s.readIndex(ctx)
+		keys, err := s.readIndex(ctx)
 		if err != nil {
 			return err
 		}
-		for _, id := range uuids {
-			if id == a.UUID {
+		for _, key := range keys {
+			if key == a.Key() {
 				return nil // already indexed
 			}
 		}
-		uuids = append(uuids, a.UUID)
-		return s.writeIndex(ctx, uuids)
+		keys = append(keys, a.Key())
+		return s.writeIndex(ctx, keys)
 	})
 }
 
-func (s *darwinStore) Delete(ctx context.Context, uuid string) error {
+func (s *darwinStore) Delete(ctx context.Context, key string) error {
 	return s.withLock(func() error {
 		// Update index FIRST, then delete per-account item.
 		// If we crash after updating the index but before deleting the item,
 		// the item is an orphan-without-index — silently ignored by List.
-		// The opposite ordering (delete item first) risks a UUID remaining in
+		// The opposite ordering (delete item first) risks a key remaining in
 		// the index with no backing item — an orphan-in-index that is harder
 		// to surface cleanly.
-		uuids, err := s.readIndex(ctx)
+		keys, err := s.readIndex(ctx)
 		if err != nil {
 			return err
 		}
-		filtered := make([]string, 0, len(uuids))
-		for _, id := range uuids {
-			if id != uuid {
+		filtered := make([]string, 0, len(keys))
+		for _, id := range keys {
+			if id != key {
 				filtered = append(filtered, id)
 			}
 		}
 		if err := s.writeIndex(ctx, filtered); err != nil {
 			return err
 		}
-		svc := darwinPerAccountService(s.provider, uuid)
+		svc := darwinPerAccountService(s.provider, key)
 		return darwinDeleteItem(ctx, svc, "")
 	})
 }
 
+func (s *darwinStore) Promote(ctx context.Context, instruction Promotion) (PromotionResult, error) {
+	var result PromotionResult
+	err := s.withLock(func() error {
+		sourceData, absent, err := darwinReadAccountItem(ctx, s.provider, instruction.SourceKey)
+		if err != nil {
+			return err
+		}
+		if absent {
+			result = PromotionSourceChanged
+			return nil
+		}
+		var source Account
+		if err := json.Unmarshal(sourceData, &source); err != nil {
+			return fmt.Errorf("accounts: parse account %s: %w", instruction.SourceKey, err)
+		}
+		if !bytes.Equal(source.RawBlob, instruction.ObservedSourceRawBlob) {
+			result = PromotionSourceChanged
+			return nil
+		}
+
+		destinationKey := instruction.Destination.Key()
+		destinationData, destinationAbsent, err := darwinReadAccountItem(ctx, s.provider, destinationKey)
+		if err != nil {
+			return err
+		}
+		var existingDestination Account
+		present := !destinationAbsent
+		if present {
+			if err := json.Unmarshal(destinationData, &existingDestination); err != nil {
+				return fmt.Errorf("accounts: parse account %s: %w", destinationKey, err)
+			}
+		}
+		if present != instruction.ExpectedDestinationPresent ||
+			(present && !bytes.Equal(existingDestination.RawBlob, instruction.ExpectedDestinationRawBlob)) {
+			result = PromotionDestinationChanged
+			return nil
+		}
+
+		account := instruction.Destination.Email
+		if present {
+			account = existingDestination.Email
+		}
+		if err := darwinWriteItem(ctx, darwinPerAccountService(s.provider, destinationKey), account, string(mustMarshal(instruction.Destination))); err != nil {
+			return err
+		}
+		keys, err := s.readIndex(ctx)
+		if err != nil {
+			return err
+		}
+		keys = appendKey(keys, destinationKey)
+		if err := s.writeIndex(ctx, keys); err != nil {
+			return err
+		}
+		if err := darwinDeleteItem(ctx, darwinPerAccountService(s.provider, instruction.SourceKey), ""); err != nil {
+			return err
+		}
+		keys = removeKey(keys, instruction.SourceKey)
+		if err := s.writeIndex(ctx, keys); err != nil {
+			return err
+		}
+		result = PromotionCompleted
+		return nil
+	})
+	return result, err
+}
+
 // darwinIsNotFound reports whether a security-command error means "item not found."
-func darwinIsNotFound(err error) bool {
+func darwinIsNotFound(result darwinSecurityResult) bool {
 	var ee *exec.ExitError
-	if !errors.As(err, &ee) {
+	if !errors.As(result.Err, &ee) {
 		return false
 	}
 	// /usr/bin/security exits 44 (errSecItemNotFound) when the item is absent.
 	if ee.ExitCode() == 44 {
 		return true
 	}
-	return strings.Contains(strings.TrimSpace(string(ee.Stderr)), "could not be found")
+	return strings.Contains(strings.TrimSpace(string(result.Stderr)), "could not be found")
 }
 
 // darwinKeychainErr extracts a readable message from a security-command failure.
-func darwinKeychainErr(err error) error {
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		if s := strings.TrimSpace(string(ee.Stderr)); s != "" {
-			return fmt.Errorf("keychain: %s", s)
+
+func darwinKeychainErr(result darwinSecurityResult) error {
+	if s := strings.TrimSpace(string(result.Stderr)); s != "" {
+		return fmt.Errorf("keychain: %s", s)
+	}
+	return result.Err
+}
+
+func dedupeKeys(keys []string) []string {
+	seen := make(map[string]struct{}, len(keys))
+	deduped := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		deduped = append(deduped, key)
+	}
+	return deduped
+}
+
+func appendKey(keys []string, key string) []string {
+	for _, existing := range keys {
+		if existing == key {
+			return keys
 		}
 	}
-	return err
+	return append(keys, key)
+}
+
+func removeKey(keys []string, key string) []string {
+	filtered := make([]string, 0, len(keys))
+	for _, existing := range keys {
+		if existing != key {
+			filtered = append(filtered, existing)
+		}
+	}
+	return filtered
 }
 
 // mustMarshal marshals v to JSON, panicking on error.

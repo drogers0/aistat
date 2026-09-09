@@ -2,7 +2,25 @@ package accounts
 
 import (
 	"context"
+	"encoding/json"
 	"io"
+)
+
+type Promotion struct {
+	SourceKey                  string
+	ObservedSourceRawBlob      json.RawMessage
+	Destination                Account
+	ExpectedDestinationPresent bool
+	ExpectedDestinationRawBlob json.RawMessage
+}
+
+type PromotionResult uint8
+
+const (
+	PromotionResultUnspecified PromotionResult = iota
+	PromotionCompleted
+	PromotionSourceChanged
+	PromotionDestinationChanged
 )
 
 // Store persists provider accounts across invocations. All methods are safe for
@@ -11,10 +29,11 @@ import (
 type Store interface {
 	// List returns all stored accounts in unspecified order.
 	List(ctx context.Context) ([]Account, error)
-	// Upsert inserts or replaces the account identified by a.UUID.
+	// Upsert inserts or replaces the account identified by a.Key().
 	Upsert(ctx context.Context, a Account) error
-	// Delete removes the account with the given UUID. No-op if absent.
-	Delete(ctx context.Context, uuid string) error
+	// Delete removes the account with the given key. No-op if absent.
+	Delete(ctx context.Context, key string) error
+	Promote(ctx context.Context, instruction Promotion) (PromotionResult, error)
 }
 
 // config holds options passed to OpenStore.

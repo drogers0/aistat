@@ -42,15 +42,15 @@ func TestSortAccountResults(t *testing.T) {
 				}
 			}
 		}},
-		{"stable for equal keys", func(t *testing.T) {
-			// Two inactive accounts with same email; stable sort preserves insertion order.
+		{"key tiebreak for equal emails", func(t *testing.T) {
+			// Equal-email rows use their opaque key as the deterministic tie-break.
 			results := []providers.AccountResult{
-				{Email: "same@example.com", UUID: "first", Active: false},
-				{Email: "same@example.com", UUID: "second", Active: false},
+				{Email: "same@example.com", Key: "second", Active: false},
+				{Email: "same@example.com", Key: "first", Active: false},
 			}
 			SortAccountResults(results)
-			if results[0].UUID != "first" {
-				t.Errorf("stable sort violated: expected first UUID at [0], got %q", results[0].UUID)
+			if results[0].Key != "first" {
+				t.Errorf("key tie-break = %q, want first", results[0].Key)
 			}
 		}},
 		{"active before email sort", func(t *testing.T) {

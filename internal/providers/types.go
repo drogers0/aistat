@@ -114,15 +114,19 @@ func (r Report) MarshalJSON() ([]byte, error) {
 // map on success and leaves it nil + sets Error on failure. UUID is hidden
 // from JSON (json:"-") because email is the user-facing identifier for
 // scripted consumers; UUIDs surface in `aistat accounts list` text output
-// and in `aistat switch`'s confirmation line, both of which are the
-// discovery surfaces for UUID-prefix matching.
+// and in legacy switch labels, while canonical Claude rows expose an address
+// for selector discovery.
 type AccountResult struct {
-	Email  string           `json:"email"`
-	UUID   string           `json:"-"`
-	Plan   string           `json:"plan"`
-	Active bool             `json:"active"`
-	Limits map[string]Limit `json:"limits"`
-	Error  string           `json:"error,omitempty"`
+	Email            string           `json:"email"`
+	UUID             string           `json:"-"`
+	Key              string           `json:"-"`
+	Address          string           `json:"address,omitempty"`
+	OrganizationName string           `json:"organization_name,omitempty"`
+	OrganizationType string           `json:"organization_type,omitempty"`
+	Plan             string           `json:"plan"`
+	Active           bool             `json:"active"`
+	Limits           map[string]Limit `json:"limits"`
+	Error            string           `json:"error,omitempty"`
 }
 
 // ProviderResult is one provider's contribution to the Report.

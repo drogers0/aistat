@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/drogers0/aistat/v2/internal/autoswitch"
 	"github.com/drogers0/aistat/v2/internal/providers"
 	"github.com/drogers0/aistat/v2/internal/providers/claude"
+	"github.com/drogers0/aistat/v2/internal/testutil"
 )
 
 func th(fiveHour, weekly float64, fiveOff, weeklyOff bool) autoswitch.Thresholds {
@@ -111,7 +114,7 @@ func seedTwoAccounts(t *testing.T) *accounts.MemoryStore {
 	now := time.Now()
 	seedAccount(t, ms, "uuid-work", "work@example.com", "default_claude_max_20x", now.Add(-2*time.Hour))
 	seedAccount(t, ms, "uuid-personal", "personal@example.com", "default_claude_max_5x", now.Add(-1*time.Hour))
-	withSwitchActiveUUID(t, "uuid-work")
+	withSwitchActiveKey(t, "uuid-work")
 	return ms
 }
 
@@ -173,7 +176,7 @@ func TestSwitchConditional(t *testing.T) {
 			now := time.Now()
 			seedAccount(t, ms, "uuid-work", "work@example.com", "default_claude_max_20x", now.Add(-2*time.Hour))
 			seedAccount(t, ms, "uuid-personal", "personal@example.com", "default_claude_max_5x", now.Add(-1*time.Hour))
-			withSwitchActiveUUID(t, "uuid-work")
+			withSwitchActiveKey(t, "uuid-work")
 
 			preToken := claude.StoredAccessToken(getAccountFromStore(t, ms, "uuid-work"))
 
@@ -183,7 +186,7 @@ func TestSwitchConditional(t *testing.T) {
 					rawBlob, _ := json.Marshal(map[string]any{
 						"claudeAiOauth": map[string]any{"accessToken": "fresh-token"},
 					})
-					updated, err := accounts.NewAccount(rawBlob, orig.UUID, orig.Email, orig.DisplayName, orig.RateLimitTier, orig.LastSeenAt)
+					updated, err := accounts.NewAccount(rawBlob, orig.UUID, orig.Email, orig.DisplayName, orig.RateLimitTier, orig.OrganizationUUID, orig.OrganizationName, orig.OrganizationType, orig.LastSeenAt)
 					if err != nil {
 						return err
 					}
@@ -206,6 +209,85 @@ func TestSwitchConditional(t *testing.T) {
 					seenToken, preToken, "fresh-token")
 			}
 		}},
+		{"legacy promotion re-resolves active key and prior label", func(t *testing.T) {
+			clearThresholdEnv(t)
+			ms := withMemoryStore(t)
+			withCodexMemoryStore(t)
+			const legacyKey = "11111111-1111-4111-8111-111111111111"
+			const promotedKey = "11111111-1111-4111-8111-111111111111_4b8e12d0-2222-4222-8222-222222222222"
+			legacyRaw, err := json.Marshal(map[string]any{
+				"claudeAiOauth": map[string]any{"accessToken": "legacy-token"},
+			})
+			testutil.WantNoErr(t, err)
+			source, err := accounts.NewAccount(legacyRaw, "11111111-1111-4111-8111-111111111111", "work@example.com", "Work", "plan", "", "", "", time.Now())
+			testutil.WantNoErr(t, err)
+			testutil.WantNoErr(t, ms.Upsert(context.Background(), source))
+			promotedRaw, err := json.Marshal(map[string]any{
+				"claudeAiOauth": map[string]any{"accessToken": "promoted-token"},
+			})
+			testutil.WantNoErr(t, err)
+			destination, err := accounts.NewAccount(promotedRaw, "11111111-1111-4111-8111-111111111111", "work@example.com", "Work", "plan", "4b8e12d0-2222-4222-8222-222222222222", "Acme", "claude_team", time.Now())
+			testutil.WantNoErr(t, err)
+			seedAccount(t, ms, "uuid-other", "other@example.com", "plan", time.Now())
+
+			oldLookup := switchLookupActiveKey
+			switchLookupActiveKey = func(_ context.Context, stored []accounts.Account, _ io.Writer) (string, error) {
+				for _, account := range stored {
+					if account.Key() == legacyKey {
+						return legacyKey, nil
+					}
+				}
+				for _, account := range stored {
+					if account.Key() == promotedKey {
+						return promotedKey, nil
+					}
+				}
+				return "", nil
+			}
+			t.Cleanup(func() { switchLookupActiveKey = oldLookup })
+			withSwitchClient(t, &stubSwitchClient{
+				reconcileFn: func(ctx context.Context) error {
+					result, err := ms.Promote(ctx, accounts.Promotion{
+						SourceKey:                  legacyKey,
+						ObservedSourceRawBlob:      source.RawBlob,
+						Destination:                destination,
+						ExpectedDestinationPresent: false,
+					})
+					if err != nil {
+						return err
+					}
+					if result != accounts.PromotionCompleted {
+						return fmt.Errorf("promotion result = %d, want completed", result)
+					}
+					return nil
+				},
+				fetchResults: []providers.AccountResult{{
+					Email: "work@example.com", UUID: "11111111-1111-4111-8111-111111111111", Key: promotedKey,
+					Limits: makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50}),
+				}},
+			})
+			var seenToken string
+			withFetchLiveUsageFn(t, func(token string) (map[string]providers.Limit, error) {
+				seenToken = token
+				return makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50}), nil
+			})
+			written, _ := withWriteBlob(t)
+
+			r := runSwitchTest("claude", "--if-above-5h", "85", "--if-above-weekly", "95")
+			wantExit(t, r, 0)
+			if got, want := r.stdout, "already on best account (work@example.com/acme-4b8e12d0)\n"; got != want {
+				t.Fatalf("conditional result = %q, want %q", got, want)
+			}
+			if r.stderr != "" {
+				t.Fatalf("conditional stderr = %q, want successful tick", r.stderr)
+			}
+			if seenToken != "promoted-token" {
+				t.Fatalf("active usage token = %q, want promoted-token", seenToken)
+			}
+			if *written != nil {
+				t.Fatalf("already-on-best wrote live credential: %q", *written)
+			}
+		}},
 		{"5h over threshold switches and notifies", func(t *testing.T) {
 			clearThresholdEnv(t)
 			seedTwoAccounts(t)
@@ -213,8 +295,8 @@ func TestSwitchConditional(t *testing.T) {
 				return makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50}), nil
 			})
 			withSwitchClient(t, &stubSwitchClient{fetchResults: []providers.AccountResult{
-				{UUID: "uuid-work", Email: "work@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50})},
-				{UUID: "uuid-personal", Email: "personal@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 90, "seven_day": 80})},
+				{UUID: "uuid-work", Key: "uuid-work", Email: "work@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50})},
+				{UUID: "uuid-personal", Key: "uuid-personal", Email: "personal@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 90, "seven_day": 80})},
 			}})
 			written, _ := withWriteBlob(t)
 			notes := withNotifyCapture(t)
@@ -224,7 +306,7 @@ func TestSwitchConditional(t *testing.T) {
 			if len(*written) == 0 {
 				t.Fatal("expected live blob write")
 			}
-			if len(*notes) != 1 || (*notes)[0] != "Claude: switched to personal@example.com (five_hour at 87%)" {
+			if len(*notes) != 1 || (*notes)[0] != "Claude: switched to personal@example.com (uuid uuid-personal) (five_hour at 87%)" {
 				t.Errorf("notifications = %v", *notes)
 			}
 		}},
@@ -235,15 +317,15 @@ func TestSwitchConditional(t *testing.T) {
 				return makeLimitsFull(map[string]float64{"five_hour": 60, "seven_day": 4}), nil
 			})
 			withSwitchClient(t, &stubSwitchClient{fetchResults: []providers.AccountResult{
-				{UUID: "uuid-work", Email: "work@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 60, "seven_day": 4})},
-				{UUID: "uuid-personal", Email: "personal@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 90, "seven_day": 80})},
+				{UUID: "uuid-work", Key: "uuid-work", Email: "work@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 60, "seven_day": 4})},
+				{UUID: "uuid-personal", Key: "uuid-personal", Email: "personal@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 90, "seven_day": 80})},
 			}})
 			_, _ = withWriteBlob(t)
 			notes := withNotifyCapture(t)
 			r := runSwitchTest("claude", "--if-above-5h", "85", "--if-above-weekly", "95", "--notify")
 			wantExit(t, r, 0)
 			wantOut(t, r, "switched to personal@example.com")
-			if len(*notes) != 1 || (*notes)[0] != "Claude: switched to personal@example.com (seven_day at 96%)" {
+			if len(*notes) != 1 || (*notes)[0] != "Claude: switched to personal@example.com (uuid uuid-personal) (seven_day at 96%)" {
 				t.Errorf("notifications = %v", *notes)
 			}
 		}},
@@ -254,14 +336,14 @@ func TestSwitchConditional(t *testing.T) {
 				return makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50}), nil
 			})
 			withSwitchClient(t, &stubSwitchClient{fetchResults: []providers.AccountResult{
-				{UUID: "uuid-work", Email: "work@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50})},
-				{UUID: "uuid-personal", Email: "personal@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 5, "seven_day": 50})},
+				{UUID: "uuid-work", Key: "uuid-work", Email: "work@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50})},
+				{UUID: "uuid-personal", Key: "uuid-personal", Email: "personal@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 5, "seven_day": 50})},
 			}})
 			written, _ := withWriteBlob(t)
 			notes := withNotifyCapture(t)
 			r := runSwitchTest("claude", "--if-above-5h", "85", "--if-above-weekly", "95", "--notify")
 			wantExit(t, r, 0)
-			wantOut(t, r, "already on best account (work@example.com)")
+			wantOut(t, r, "already on best account (work@example.com (uuid uuid-work))")
 			if len(*written) != 0 {
 				t.Errorf("live blob written despite already-on-best: %s", *written)
 			}
@@ -275,7 +357,7 @@ func TestSwitchConditional(t *testing.T) {
 			now := time.Now()
 			seedAccount(t, ms, "uuid-work", "work@example.com", "default_claude_max_20x", now)
 			seedAccount(t, ms, "uuid-personal", "personal@example.com", "default_claude_max_5x", now)
-			withSwitchActiveUUID(t, "")
+			withSwitchActiveKey(t, "")
 			// Stub so the unconditional reconcile doesn't touch the real Claude client.
 			withSwitchClient(t, &stubSwitchClient{})
 			written, _ := withWriteBlob(t)
@@ -335,8 +417,8 @@ func TestSwitchConditional(t *testing.T) {
 				return makeLimitsFull(map[string]float64{"five_hour": 45, "seven_day": 80}), nil
 			})
 			withSwitchClient(t, &stubSwitchClient{fetchResults: []providers.AccountResult{
-				{UUID: "uuid-work", Email: "work@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 45, "seven_day": 80})},
-				{UUID: "uuid-personal", Email: "personal@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 90, "seven_day": 80})},
+				{UUID: "uuid-work", Key: "uuid-work", Email: "work@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 45, "seven_day": 80})},
+				{UUID: "uuid-personal", Key: "uuid-personal", Email: "personal@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 90, "seven_day": 80})},
 			}})
 			_, _ = withWriteBlob(t)
 			// No 5h flag → the 5h window falls back to env (50); the weekly flag
@@ -384,7 +466,7 @@ func TestSwitchConditional(t *testing.T) {
 			clearThresholdEnv(t)
 			ms := withMemoryStore(t)
 			seedAccount(t, ms, "uuid-work", "work@example.com", "default_claude_max_20x", time.Now())
-			withSwitchActiveUUID(t, "uuid-work")
+			withSwitchActiveKey(t, "uuid-work")
 			// The gate now reconciles unconditionally before resolving the active
 			// account, so this must be stubbed like its siblings — otherwise it
 			// would exercise the real Claude client (real keychain read) and, on a
@@ -410,8 +492,8 @@ func TestSwitchConditional(t *testing.T) {
 			// A timer-driven poll against a provider with no stored accounts is a
 			// no-op, not misuse — exit 0, same as the single-account dead end.
 			clearThresholdEnv(t)
-			withMemoryStore(t)          // empty store
-			withSwitchActiveUUID(t, "") // no active account to resolve
+			withMemoryStore(t)         // empty store
+			withSwitchActiveKey(t, "") // no active account to resolve
 			r := runSwitchTest("claude", "--if-above-5h", "85")
 			wantExit(t, r, 0)
 			wantErrOut(t, r, "no accounts stored")
@@ -424,7 +506,7 @@ func TestSwitchConditional(t *testing.T) {
 			now := time.Now()
 			seedCodexAccount(t, ms, "uuid-cwork", "cwork@example.com", "plan", now.Add(-2*time.Hour))
 			seedCodexAccount(t, ms, "uuid-cpersonal", "cpersonal@example.com", "plan", now.Add(-1*time.Hour))
-			withCodexActiveUUID(t, "uuid-cwork")
+			withCodexActiveKey(t, "uuid-cwork")
 			withCodexSwitchClient(t, &stubCodexSwitchClient{})
 			withCodexFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
 				return makeLimitsFull(map[string]float64{"five_hour": 58, "seven_day": 50}), nil
@@ -439,13 +521,13 @@ func TestSwitchConditional(t *testing.T) {
 			now := time.Now()
 			seedCodexAccount(t, ms, "uuid-cwork", "cwork@example.com", "plan", now.Add(-2*time.Hour))
 			seedCodexAccount(t, ms, "uuid-cpersonal", "cpersonal@example.com", "plan", now.Add(-1*time.Hour))
-			withCodexActiveUUID(t, "uuid-cwork")
+			withCodexActiveKey(t, "uuid-cwork")
 			withCodexFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
 				return makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50}), nil
 			})
 			withCodexSwitchClient(t, &stubCodexSwitchClient{fetchResults: []providers.AccountResult{
-				{UUID: "uuid-cwork", Email: "cwork@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50})},
-				{UUID: "uuid-cpersonal", Email: "cpersonal@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 90, "seven_day": 80})},
+				{UUID: "uuid-cwork", Key: "uuid-cwork", Email: "cwork@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50})},
+				{UUID: "uuid-cpersonal", Key: "uuid-cpersonal", Email: "cpersonal@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 90, "seven_day": 80})},
 			}})
 			_, _ = withCodexWriteBlob(t)
 			r := runSwitchTest("codex", "--if-above-5h", "85", "--if-above-weekly", "95")
@@ -457,10 +539,10 @@ func TestSwitchConditional(t *testing.T) {
 			withSwitchClient(t, &stubSwitchClient{})
 			_, _ = withWriteBlob(t)
 			notes := withNotifyCapture(t)
-			r := runSwitchTest("claude", "--to", "personal", "--notify")
+			r := runSwitchTest("claude", "--to", "personal@example.com", "--notify")
 			wantExit(t, r, 0)
 			wantOut(t, r, "switched to personal@example.com")
-			if len(*notes) != 1 || (*notes)[0] != "Claude: switched to personal@example.com" {
+			if len(*notes) != 1 || (*notes)[0] != "Claude: switched to personal@example.com (uuid uuid-personal)" {
 				t.Errorf("notifications = %v", *notes)
 			}
 		}},
@@ -471,8 +553,8 @@ func TestSwitchConditional(t *testing.T) {
 				return makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50}), nil
 			})
 			withSwitchClient(t, &stubSwitchClient{fetchResults: []providers.AccountResult{
-				{UUID: "uuid-work", Email: "work@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50})},
-				{UUID: "uuid-personal", Email: "personal@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 90, "seven_day": 80})},
+				{UUID: "uuid-work", Key: "uuid-work", Email: "work@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50})},
+				{UUID: "uuid-personal", Key: "uuid-personal", Email: "personal@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 90, "seven_day": 80})},
 			}})
 			_, _ = withWriteBlob(t)
 			old := sendNotification
@@ -490,8 +572,8 @@ func TestSwitchConditional(t *testing.T) {
 				return makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50}), nil
 			})
 			withSwitchClient(t, &stubSwitchClient{fetchResults: []providers.AccountResult{
-				{UUID: "uuid-work", Email: "work@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50})},
-				{UUID: "uuid-personal", Email: "personal@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 90, "seven_day": 80})},
+				{UUID: "uuid-work", Key: "uuid-work", Email: "work@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 13, "seven_day": 50})},
+				{UUID: "uuid-personal", Key: "uuid-personal", Email: "personal@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 90, "seven_day": 80})},
 			}})
 			_, _ = withWriteBlob(t)
 			notes := withNotifyCapture(t)
@@ -562,8 +644,8 @@ func TestSwitchConditional(t *testing.T) {
 				return makeLimitsFull(map[string]float64{"five_hour": 45, "seven_day": 80}), nil
 			})
 			withSwitchClient(t, &stubSwitchClient{fetchResults: []providers.AccountResult{
-				{UUID: "uuid-work", Email: "work@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 45, "seven_day": 80})},
-				{UUID: "uuid-personal", Email: "personal@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 90, "seven_day": 80})},
+				{UUID: "uuid-work", Key: "uuid-work", Email: "work@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 45, "seven_day": 80})},
+				{UUID: "uuid-personal", Key: "uuid-personal", Email: "personal@example.com", Limits: makeLimitsFull(map[string]float64{"five_hour": 90, "seven_day": 80})},
 			}})
 			written, _ := withWriteBlob(t)
 			withNotifyCapture(t) // --watch implies --notify; keep osascript out of the test run
@@ -599,7 +681,7 @@ func TestSwitchConditional(t *testing.T) {
 			clearThresholdEnv(t)
 			ms := withMemoryStore(t)
 			seedAccount(t, ms, "uuid-work", "work@example.com", "default_claude_max_20x", time.Now())
-			withSwitchActiveUUID(t, "uuid-work")
+			withSwitchActiveKey(t, "uuid-work")
 			stub := &stubSwitchClient{}
 			withSwitchClient(t, stub)
 			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
@@ -617,8 +699,8 @@ func TestSwitchConditional(t *testing.T) {
 		}},
 		{"scoped watch with no stored accounts skips without fetching", func(t *testing.T) {
 			clearThresholdEnv(t)
-			withMemoryStore(t)          // empty claude store
-			withSwitchActiveUUID(t, "") // no active account
+			withMemoryStore(t)         // empty claude store
+			withSwitchActiveKey(t, "") // no active account
 			stub := &stubSwitchClient{}
 			withSwitchClient(t, stub)
 			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {

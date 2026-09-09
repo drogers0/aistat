@@ -34,6 +34,49 @@ func TestCLIFakeJSON(t *testing.T) {
 					t.Errorf("missing provider %s", id)
 				}
 			}
+			claude, _ := provs["claude"].(map[string]any)
+			rows, _ := claude["accounts"].([]any)
+			if len(rows) != 2 {
+				t.Fatalf("Claude fake account count = %d, want 2", len(rows))
+			}
+			personal, _ := rows[0].(map[string]any)
+			team, _ := rows[1].(map[string]any)
+			if personal["email"] != "fake@example.com" || team["email"] != "fake@example.com" {
+				t.Fatalf("Claude fake emails = %v and %v, want same email", personal["email"], team["email"])
+			}
+			if personal["address"] != "fake@example.com/personal-aaaaaaaa" {
+				t.Errorf("personal address = %v, want fake@example.com/personal-aaaaaaaa", personal["address"])
+			}
+			if team["address"] != "fake@example.com/engineering-550e8400" {
+				t.Errorf("team address = %v, want fake@example.com/engineering-550e8400", team["address"])
+			}
+			if personal["organization_type"] != "claude_max" || team["organization_type"] != "claude_team" {
+				t.Errorf("organization types = %v and %v", personal["organization_type"], team["organization_type"])
+			}
+			if personal["organization_name"] != "fake@example.com's Organization" || team["organization_name"] != "Engineering" {
+				t.Errorf("organization names = %v and %v", personal["organization_name"], team["organization_name"])
+			}
+			if personal["active"] != true || team["active"] != false {
+				t.Errorf("active flags = %v and %v, want true and false", personal["active"], team["active"])
+			}
+			personalLimits, _ := personal["limits"].(map[string]any)
+			teamLimits, _ := team["limits"].(map[string]any)
+			personalFiveHour, _ := personalLimits["five_hour"].(map[string]any)
+			teamFiveHour, _ := teamLimits["five_hour"].(map[string]any)
+			if personalFiveHour["used_percent"] == teamFiveHour["used_percent"] {
+				t.Errorf("fake Claude five-hour limits unexpectedly equal: %v", personalLimits["five_hour"])
+			}
+			codex, _ := provs["codex"].(map[string]any)
+			codexRows, _ := codex["accounts"].([]any)
+			if len(codexRows) != 1 {
+				t.Fatalf("Codex fake account count = %d, want 1", len(codexRows))
+			}
+			codexRow, _ := codexRows[0].(map[string]any)
+			for _, field := range []string{"address", "organization_name", "organization_type"} {
+				if _, ok := codexRow[field]; ok {
+					t.Errorf("Codex fake row unexpectedly contains %q", field)
+				}
+			}
 		}},
 		{"single provider excludes others", func(t *testing.T) {
 			r := runCLI("usage", "claude", "--fake")

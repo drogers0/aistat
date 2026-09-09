@@ -15,15 +15,15 @@ import (
 	"github.com/drogers0/aistat/v2/internal/testutil"
 )
 
-// noopResolver is a stub resolveActiveUUID that always returns "" (no active account).
+// noopResolver is a stub resolveActiveKey that always returns "" (no active account).
 func noopResolver(_ context.Context, _ []accounts.Account) (string, error) {
 	return "", nil
 }
 
-// stubResolver returns a resolver that always reports the given UUID as active.
-func stubResolver(activeUUID string) func(context.Context, []accounts.Account) (string, error) {
+// stubResolver returns a resolver that always reports the given key as active.
+func stubResolver(activeKey string) func(context.Context, []accounts.Account) (string, error) {
 	return func(_ context.Context, _ []accounts.Account) (string, error) {
-		return activeUUID, nil
+		return activeKey, nil
 	}
 }
 
@@ -47,11 +47,23 @@ func seedAccount(t *testing.T, ms *accounts.MemoryStore, uuid, email, plan strin
 	rawBlob, _ := json.Marshal(map[string]any{
 		"claudeAiOauth": map[string]any{"accessToken": "tok-" + uuid, "refreshToken": "rt-" + uuid},
 	})
-	a, err := accounts.NewAccount(rawBlob, uuid, email, email, plan, lastSeen)
+	a, err := accounts.NewAccount(rawBlob, uuid, email, email, plan, "", "", "", lastSeen)
 	testutil.WantNoErr(t, err)
 	if err := ms.Upsert(context.Background(), a); err != nil {
 		t.Fatalf("seedAccount Upsert: %v", err)
 	}
+}
+
+func seedClaudeContext(t *testing.T, ms *accounts.MemoryStore, uuid, email, plan, organizationUUID, organizationName, organizationType string, lastSeen time.Time) accounts.Account {
+	t.Helper()
+	rawBlob, err := json.Marshal(map[string]any{
+		"claudeAiOauth": map[string]any{"accessToken": "tok-" + uuid + organizationUUID, "refreshToken": "rt-" + uuid + organizationUUID},
+	})
+	testutil.WantNoErr(t, err)
+	a, err := accounts.NewAccount(rawBlob, uuid, email, email, plan, organizationUUID, organizationName, organizationType, lastSeen)
+	testutil.WantNoErr(t, err)
+	testutil.WantNoErr(t, ms.Upsert(context.Background(), a))
+	return a
 }
 
 // --- Unknown subcommand errors ---
@@ -155,6 +167,51 @@ func TestAccountsList(t *testing.T) {
 				t.Fatalf("accounts not sorted by email; stdout:\n%s", r.stdout)
 			}
 		}},
+		{"canonical claude list uses address and organization metadata", func(t *testing.T) {
+			ms := testutil.MemStore(t)
+			seen := time.Now()
+			seedClaudeContext(t, ms,
+				"9f2a41c7-3b5d-4e7f-9a1c-2d4e6f8a0b1c",
+				"me@example.com",
+				"default_claude_max_5x",
+				"7d3c58e9-6a2b-4f81-b771-1c9e5d3a7042",
+				"me@example.com's Organization",
+				"claude_max", seen)
+
+			human := runAccountsTest(ms, noopResolver, globals{Human: true}, "list")
+			wantExit(t, human, 0)
+			if human.stdout != "me@example.com/personal-9f2a41c7  9f2a41c7-3b5d-4e7f-9a1c-2d4e6f8a0b1c  default_claude_max_5x\n" {
+				t.Fatalf("human list = %q", human.stdout)
+			}
+
+			jsonResult := runAccountsTest(ms, noopResolver, globals{}, "list")
+			wantExit(t, jsonResult, 0)
+			const want = "{\"claude\":[{\"email\":\"me@example.com\",\"uuid\":\"9f2a41c7-3b5d-4e7f-9a1c-2d4e6f8a0b1c\",\"plan\":\"default_claude_max_5x\",\"stale\":false,\"address\":\"me@example.com/personal-9f2a41c7\",\"organization_name\":\"me@example.com's Organization\",\"organization_type\":\"claude_max\"}]}\n"
+			if jsonResult.stdout != want {
+				t.Fatalf("JSON list = %q, want %q", jsonResult.stdout, want)
+			}
+		}},
+		{"equal email rows sort by key in text and JSON", func(t *testing.T) {
+			ms := testutil.MemStore(t)
+			seen := time.Now()
+			seedClaudeContext(t, ms, "bbbbbbbb-1111-4111-8111-111111111111", "same@example.com", "plan-b", "22222222-2222-4222-8222-222222222222", "Second", "claude_team", seen)
+			seedClaudeContext(t, ms, "aaaaaaaa-1111-4111-8111-111111111111", "same@example.com", "plan-a", "11111111-1111-4111-8111-111111111111", "First", "claude_team", seen)
+
+			human := runAccountsTest(ms, noopResolver, globals{Human: true}, "list")
+			wantExit(t, human, 0)
+			const wantHuman = "same@example.com/first-11111111  aaaaaaaa-1111-4111-8111-111111111111  plan-a\n" +
+				"same@example.com/second-22222222  bbbbbbbb-1111-4111-8111-111111111111  plan-b\n"
+			if human.stdout != wantHuman {
+				t.Fatalf("human list = %q, want %q", human.stdout, wantHuman)
+			}
+
+			jsonResult := runAccountsTest(ms, noopResolver, globals{}, "list")
+			wantExit(t, jsonResult, 0)
+			const wantJSON = "{\"claude\":[{\"email\":\"same@example.com\",\"uuid\":\"aaaaaaaa-1111-4111-8111-111111111111\",\"plan\":\"plan-a\",\"stale\":false,\"address\":\"same@example.com/first-11111111\",\"organization_name\":\"First\",\"organization_type\":\"claude_team\"},{\"email\":\"same@example.com\",\"uuid\":\"bbbbbbbb-1111-4111-8111-111111111111\",\"plan\":\"plan-b\",\"stale\":false,\"address\":\"same@example.com/second-22222222\",\"organization_name\":\"Second\",\"organization_type\":\"claude_team\"}]}\n"
+			if jsonResult.stdout != wantJSON {
+				t.Fatalf("JSON list = %q, want %q", jsonResult.stdout, wantJSON)
+			}
+		}},
 		// ---- multi-provider JSON tests ----
 		{"bulk json two providers", func(t *testing.T) {
 			claudeMS := testutil.MemStore(t)
@@ -220,6 +277,10 @@ func TestAccountsList(t *testing.T) {
 				if _, ok := claudeAccts[0][field]; !ok {
 					t.Errorf("claude account missing field %q", field)
 				}
+			}
+			const want = "{\"claude\":[{\"email\":\"shape@example.com\",\"uuid\":\"shape-uuid\",\"plan\":\"shape-plan\",\"stale\":false}],\"codex\":[{\"email\":\"shape@chatgpt.com\",\"uuid\":\"shape-duuid\",\"plan\":\"codex-shape\",\"stale\":false}]}\n"
+			if r.stdout != want {
+				t.Fatalf("JSON list = %q, want %q", r.stdout, want)
 			}
 		}},
 		{"bulk text section headers", func(t *testing.T) {
@@ -293,7 +354,9 @@ func TestAccountsRemove(t *testing.T) {
 			ms := testutil.MemStore(t)
 			r := runAccountsTest(ms, noopResolver, globals{}, "remove")
 			wantExit(t, r, 2)
-			wantErrOut(t, r, "accounts remove requires an email or uuid argument")
+			if r.stderr != "accounts remove requires an address, organization slug, email, or UUID prefix argument\n" {
+				t.Fatalf("stderr = %q", r.stderr)
+			}
 		}},
 		{"no match", func(t *testing.T) {
 			ms := testutil.MemStore(t)
@@ -311,23 +374,83 @@ func TestAccountsRemove(t *testing.T) {
 			// "work" matches both emails via substring.
 			r := runAccountsTest(ms, noopResolver, globals{}, "remove", "work")
 			wantExit(t, r, 2)
-			wantErrOut(t, r, `multiple stored accounts match "work", disambiguate by uuid`)
+			if r.stderr != "multiple stored accounts match \"work\"; use one of: work@company.com (uuid dddd-4444), work@other.com (uuid eeee-5555)\n" {
+				t.Fatalf("stderr = %q", r.stderr)
+			}
 		}},
 		// ---- active-protection (D11) ----
 		{"active protection blocks remove", func(t *testing.T) {
 			ms := testutil.MemStore(t)
-			activeUUID := "ffff-6666"
-			seedAccount(t, ms, activeUUID, "active@example.com", "plan", time.Now())
+			activeKey := "ffff-6666"
+			seedAccount(t, ms, activeKey, "active@example.com", "plan", time.Now())
 
 			// Resolver reports this account as active.
-			r := runAccountsTest(ms, stubResolver(activeUUID), globals{}, "remove", "active@example.com")
+			r := runAccountsTest(ms, stubResolver(activeKey), globals{}, "remove", "active@example.com")
 			wantExit(t, r, 2)
-			wantErrOut(t, r, "cannot remove currently active account — use 'claude /logout' first")
+			if r.stderr != "cannot remove currently active account (active@example.com (uuid ffff-6666)) — use 'claude /logout' first\n" {
+				t.Fatalf("stderr = %q", r.stderr)
+			}
 
 			// Account must still be present in the store.
 			listed, _ := ms.List(context.Background())
 			if len(listed) != 1 {
 				t.Fatalf("store should still have 1 account after blocked remove; got %d", len(listed))
+			}
+		}},
+		{"active protection compares composite stored key", func(t *testing.T) {
+			ms := testutil.MemStore(t)
+			seen := time.Now()
+			seedClaudeContext(t, ms,
+				"aaaaaaaa-1111-4111-8111-111111111111", "team@example.com", "default_claude_max_5x",
+				"4b8e12d0-2222-4222-8222-222222222222", "Acme", "claude_team", seen)
+
+			r := runAccountsTest(ms, stubResolver("aaaaaaaa-1111-4111-8111-111111111111_4b8e12d0-2222-4222-8222-222222222222"), globals{}, "remove", "team@example.com/acme-4b8e12d0")
+			wantExit(t, r, 2)
+			const want = "cannot remove currently active account (team@example.com/acme-4b8e12d0) — use 'claude /logout' first\n"
+			if r.stderr != want {
+				t.Fatalf("active-removal guard = %q, want %q", r.stderr, want)
+			}
+			listed, err := ms.List(context.Background())
+			testutil.WantNoErr(t, err)
+			if len(listed) != 1 {
+				t.Fatalf("stored accounts after blocked removal = %d, want 1", len(listed))
+			}
+		}},
+		{"canonical address wins matcher precedence", func(t *testing.T) {
+			ms := testutil.MemStore(t)
+			seen := time.Now()
+			seedClaudeContext(t, ms,
+				"aaaaaaaa-1111-4111-8111-111111111111", "team@example.com", "default_claude_max_5x",
+				"4b8e12d0-2222-4222-8222-222222222222", "Acme", "claude_team", seen)
+			seedClaudeContext(t, ms,
+				"bbbbbbbb-1111-4111-8111-111111111111", "team@example.com", "default_claude_max_5x",
+				"88888888-2222-4222-8222-222222222222", "Elsewhere", "claude_team", seen)
+
+			r := runAccountsTest(ms, noopResolver, globals{}, "remove", "team@example.com/acme-4b8e12d0")
+			wantExit(t, r, 0)
+			if r.stdout != "removed team@example.com/acme-4b8e12d0\n" {
+				t.Fatalf("remove confirmation = %q", r.stdout)
+			}
+			listed, err := ms.List(context.Background())
+			testutil.WantNoErr(t, err)
+			if len(listed) != 1 || listed[0].Key() != "bbbbbbbb-1111-4111-8111-111111111111_88888888-2222-4222-8222-222222222222" {
+				t.Fatalf("remaining key = %#v", listed)
+			}
+		}},
+		{"ambiguous labels are canonical and sorted", func(t *testing.T) {
+			ms := testutil.MemStore(t)
+			seen := time.Now()
+			seedClaudeContext(t, ms,
+				"aaaaaaaa-1111-4111-8111-111111111111", "z@example.com", "plan",
+				"4b8e12d0-2222-4222-8222-222222222222", "Acme", "claude_team", seen)
+			seedClaudeContext(t, ms,
+				"bbbbbbbb-1111-4111-8111-111111111111", "a@example.com", "plan",
+				"4b8e12d1-2222-4222-8222-222222222222", "Acme", "claude_team", seen)
+			r := runAccountsTest(ms, noopResolver, globals{}, "remove", "acme")
+			wantExit(t, r, 2)
+			const want = "multiple stored accounts match \"acme\"; use one of: a@example.com/acme-4b8e12d1, z@example.com/acme-4b8e12d0\n"
+			if r.stderr != want {
+				t.Fatalf("ambiguity = %q, want %q", r.stderr, want)
 			}
 		}},
 		{"resolver error fails closed", func(t *testing.T) {
@@ -385,7 +508,7 @@ func TestAccountsRemove(t *testing.T) {
 			seedAccount(t, ms, "hhhh-8888", "david@personal.com", "plan", time.Now())
 
 			// "personal" matches as email substring.
-			r := runAccountsTest(ms, noopResolver, globals{}, "remove", "personal")
+			r := runAccountsTest(ms, noopResolver, globals{}, "remove", "david")
 			wantExit(t, r, 0)
 			listed, _ := ms.List(context.Background())
 			if len(listed) != 0 {
@@ -488,7 +611,9 @@ func TestAccountsRemove(t *testing.T) {
 			r := runResult{bOut.String(), bErr.String(), code}
 
 			wantExit(t, r, 2)
-			wantErrOut(t, r, "cannot remove currently active account — log out of the Codex app first")
+			if r.stderr != "cannot remove currently active account (active@chatgpt.com (uuid uuid-codex-active)) — log out of the Codex app first\n" {
+				t.Fatalf("stderr = %q", r.stderr)
+			}
 			listed, _ := codexMS.List(context.Background())
 			if len(listed) != 1 {
 				t.Fatalf("account should still be present; got %d", len(listed))
@@ -497,5 +622,63 @@ func TestAccountsRemove(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.run)
+	}
+}
+
+func TestAccountsRemoveAddressSelectors(t *testing.T) {
+	tests := []struct {
+		name     string
+		argument string
+		wantOut  string
+		seed     func(t *testing.T, ms *accounts.MemoryStore)
+	}{
+		{
+			name:     "unique clean slash slug",
+			argument: "team@example.com/acme",
+			wantOut:  "removed team@example.com/acme-4b8e12d0\n",
+			seed: func(t *testing.T, ms *accounts.MemoryStore) {
+				seedClaudeContext(t, ms, "aaaaaaaa-1111-4111-8111-111111111111", "team@example.com", "plan", "4b8e12d0-2222-4222-8222-222222222222", "Acme", "claude_team", time.Now())
+			},
+		},
+		{
+			name:     "unique bare slug",
+			argument: "acme",
+			wantOut:  "removed team@example.com/acme-4b8e12d0\n",
+			seed: func(t *testing.T, ms *accounts.MemoryStore) {
+				seedClaudeContext(t, ms, "aaaaaaaa-1111-4111-8111-111111111111", "team@example.com", "plan", "4b8e12d0-2222-4222-8222-222222222222", "Acme", "claude_team", time.Now())
+			},
+		},
+		{
+			name:     "observed max personal address",
+			argument: "me@example.com/personal-9f2a41c7",
+			wantOut:  "removed me@example.com/personal-9f2a41c7\n",
+			seed: func(t *testing.T, ms *accounts.MemoryStore) {
+				seedClaudeContext(t, ms, "9f2a41c7-3b5d-4e7f-9a1c-2d4e6f8a0b1c", "me@example.com", "default_claude_max_5x", "7d3c58e9-6a2b-4f81-b771-1c9e5d3a7042", "me@example.com's Organization", "claude_max", time.Now())
+			},
+		},
+		{
+			name:     "reserved personal team organization",
+			argument: "team@example.com/organization-4b8e12d0",
+			wantOut:  "removed team@example.com/organization-4b8e12d0\n",
+			seed: func(t *testing.T, ms *accounts.MemoryStore) {
+				seedClaudeContext(t, ms, "aaaaaaaa-1111-4111-8111-111111111111", "team@example.com", "plan", "4b8e12d0-2222-4222-8222-222222222222", "Personal", "claude_team", time.Now())
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ms := testutil.MemStore(t)
+			tt.seed(t, ms)
+			r := runAccountsTest(ms, noopResolver, globals{}, "remove", tt.argument)
+			wantExit(t, r, 0)
+			if r.stdout != tt.wantOut {
+				t.Fatalf("remove confirmation = %q, want %q", r.stdout, tt.wantOut)
+			}
+			listed, err := ms.List(context.Background())
+			testutil.WantNoErr(t, err)
+			if len(listed) != 0 {
+				t.Fatalf("stored accounts after removal = %d, want 0", len(listed))
+			}
+		})
 	}
 }

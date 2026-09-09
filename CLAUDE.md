@@ -11,7 +11,7 @@ aistat usage --refresh                 # bypass 90 s per-account cache; writes t
 
 aistat switch                          # fan out to every provider with ≥ 2 stored accounts (auto-pick best by headroom)
 aistat switch <provider>               # target one provider; auto-pick
-aistat switch <provider> --to <id>     # target one provider, one stored account (email or uuid)
+aistat switch <provider> --to <id>     # target one provider, one stored account (address, slug, email substring, or UUID prefix)
 aistat switch --to <id>                # infer provider from id-uniqueness (no provider arg)
 aistat switch <provider> --if-above-5h <N|off>       # conditional: only switch when the active account crosses a threshold, else "no switch needed"
 aistat switch <provider> --if-above-weekly <N|off>   # presence of ANY threshold flag ⟹ conditional
@@ -23,7 +23,7 @@ aistat switch <provider> --watch       # run the conditional switch on a timer i
 
 aistat accounts list                   # list every provider's stored accounts (JSON: {claude:[...], codex:[...]}; text -h: section headers)
 aistat accounts list <provider>        # scope to one provider
-aistat accounts remove <id>            # infer provider from id-uniqueness; error if id matches > 1 provider
+aistat accounts remove <id>            # infer provider from address, slug, email, or UUID-prefix uniqueness
 aistat accounts remove <id> <provider> # explicit provider
 
 aistat -h | --human                    # text rendering (affects `usage` and `accounts list`)
@@ -36,12 +36,113 @@ JSON is the default; exit codes: 0 success / 1 any-provider-failed / 2 usage err
 
 `aistat switch --watch` is a foreground loop kept alive by the OS service manager (launchd `KeepAlive` / systemd `Restart=always`) — there is deliberately no `install`/`uninstall`/`status` subcommand; the unit file/plist is the "install".
 
+## Claude context identity and addresses
+
+Claude storage, usage-cache, active-account, switch, and tie-break identity is
+the opaque `Account.Key()`. A canonical Claude key is
+`<account-uuid>_<organization-uuid>` for every non-nil profile organization,
+including `claude_max` and `claude_pro`. A legacy Claude row keeps its existing
+bare key. Codex remains keyed by its bare `id_token.sub`.
+
+The profile endpoint is the only source of Claude organization identity.
+`RawBlob` is an opaque credential payload and must never be used to infer an
+organization. The live profile normally returns a full organization block for
+a personal Max account, including `organization.uuid` and `rate_limit_tier`.
+A nil organization is accepted only as a defensive wire case. It uses the
+storage-key sentinel `accounts.PersonalOrganizationUUID == "personal"`; that
+sentinel is not a real organization UUID and is different from the common
+personal address token described below. There is no organization enumeration.
+
+Canonical Claude contexts have a stable printable address. A `claude_max` or
+`claude_pro` organization keeps its real UUID-backed key and truthful
+organization metadata, but prints and selects as
+`<email>/personal-<short-account-id>` and renders `(personal)`. A nil
+organization follows the same address path. A `claude_team` organization,
+and an unknown or empty organization type, use
+`<email>/<slug>-<short-org-id>` and the organization form. The slug is lowercase
+ASCII runs joined with hyphens. `personal` is reserved outright: a real
+organization whose slug normalizes to `personal` uses
+`organization-<short-org-id>`, so `personal-<hex>` is exclusively an
+account-UUID personal-path selector.
+
+The personal account suffix starts at eight lowercase hexadecimal characters
+and widens only when distinct personal account UUIDs collide on that prefix.
+Bare `personal` and `<email>/personal` are unique-only aliases. The same-account
+state with two personal-path rows deliberately prints the same selector and
+fails closed as ambiguous. It has no per-account fallback, second discriminator,
+or organization-suffix special case.
+
+For a suffixed organization address, the UUID-hex suffix is the primary
+identity. The slug is human-readable only. Email is consulted only to break a
+tie when multiple stored organization UUIDs share the suffix; ordinary email
+changes and organization renames do not invalidate the address. The same-key
+profile reconciliation email overwrite remains in force, although an email
+change in that duplicate-UUID collision class can make the old address fail
+closed. Without tombstones, address history, or email aliases, removing the
+original context and later storing a context with the same prefix can resolve
+the old address to that replacement. Short organization and slug forms are
+accepted only when exactly one stored context matches.
+
+Matching is case-insensitive. A suffixed organization address requires its
+trailing hexadecimal token, matches that token as an organization UUID prefix,
+and ignores the slug. If the token ties, only the email portion of that slash
+argument disambiguates the tied rows. `personal-<hex>` matches only account
+UUID prefixes on personal-path rows; `<email>/personal` and bare `personal`
+match only that path and are unique-only aliases. A bare or clean organization
+slug is likewise accepted only for one stored context.
+
+The active value carried through provider and switch code is the stored opaque
+key, not the public UUID display field. `usage` and `accounts list` add the
+optional Claude-only JSON fields `address`, `organization_name`, and
+`organization_type`; Codex and live-unstored rows leave them empty. A personal
+Max or Pro row therefore retains its real organization metadata while its
+address and human row use the personal form.
+
+## Promotion and recovery
+
+Promotion is opportunistic. After `claude /login`, `aistat usage` profiles the
+currently live legacy credential and may promote it from its bare key to the
+profile-derived composite key. It does not enumerate organizations or sweep
+legacy slots. The source and destination raw blobs are independent CAS
+snapshots. A source or destination precondition failure leaves the existing
+slots untouched and is reported as a warning.
+
+On Darwin, a successful promotion writes or updates the destination item,
+writes the index containing `[source, destination]`, deletes the source item,
+then writes the final `[destination]` index. This ordering ensures that a live
+source item is never left unindexed. A failed final index write is recoverable
+by a later `List`; a failed compaction write leaves the valid returned rows and
+emits its debug warnings for a later repair.
+
+Only a successful `List` establishes the durable stored view after a promotion
+attempt. If verification `List` fails, the client synthesizes the destination
+only for the exact pair `promoteErr == nil && result == PromotionCompleted`.
+Every other pair, including a non-nil error paired with `PromotionCompleted`
+and the unspecified zero result, uses only the render-only live fallback with
+no stored active key or stored-row refresh.
+
+`aistat switch` is the only path that mutates the live credential. `aistat
+usage` and `aistat accounts list` never write it. `usage` is not write-free,
+though: it persists to the account store on three paths — opportunistic
+capture or refresh of the active slot, refresh-token rotation, and promotion —
+and it writes the usage cache. On Darwin, `List` may additionally compact index
+entries whose per-account item is positively classified as absent, solely to
+recover an interrupted promotion.
+
+That compaction write is best-effort and never fails the read: `List` still
+returns the valid accounts and leaves the old index in place for a later
+attempt. A Keychain *read* error is the opposite case — it remains a `List`
+error and is never classified as an absence. Compaction also does not repair
+the inverse orphan class: a live Keychain item whose index entry is missing
+cannot be discovered without Keychain enumeration and remains out of scope.
+
 ## Repo layout
 
 - [cmd/aistat/](cmd/aistat/) — `main`, hand-rolled subcommand dispatch (`scanGlobals` + per-subcommand FlagSets), provider registry, fake-provider hooks. One file per subcommand: [main.go](cmd/aistat/main.go), [usage.go](cmd/aistat/usage.go), [switch.go](cmd/aistat/switch.go) (CLI-private `switchable` interface + `buildSwitchHandles` registry + bulk / single / inferred dispatch, threshold-flag parsing via `resolveThreshold`, the `--watch` branch + `routeConditional`), [switch_conditional.go](cmd/aistat/switch_conditional.go) (`switchOpts` + `triggerReason` / `usageSummary` + `notifyBestEffort`), [watch.go](cmd/aistat/watch.go) (loop primitives for `switch --watch`: `newDedupNotifier` + `watchLoop` + `sleepWithCtx` + `watchThresholdDisplay`; the entry point is `runSwitch`'s `--watch` branch), [accounts.go](cmd/aistat/accounts.go) (`providerStore` + multi-provider list/remove with id-uniqueness inference).
-- [internal/accounts/](internal/accounts/) — provider-neutral persisted account store. `Account` is opaque identity + metadata + `RawBlob`; provider packages own credential-shape parsing. `Provider` (closed set: `ProviderClaude`, `ProviderCodex`) with `validate()` gating all `OpenStore` calls. Backends: `store_darwin.go` keychain at `aistat:accounts:<provider>:<uuid>` + process flock on `$CACHE/aistat/store.lock`; `store_file.go` (`linux || windows`) JSON at `~/.config/aistat/accounts/<provider>.json` (`%USERPROFILE%\.config\...` on Windows) locking a `.<provider>.lock` sentinel (NOT the data file — survives atomic-rename) via `syscall.Flock` (`store_file_unix.go`) or `winlock.Lock` (`store_file_windows.go`); `MemoryStore` for tests. The shared body exposes a `withLock(exclusive bool, …)` seam so the lock primitive is the only per-OS code.
+- [internal/accounts/](internal/accounts/) — provider-neutral persisted account store. `Account` is opaque identity + metadata + `RawBlob`; provider packages own credential-shape parsing. `Provider` (closed set: `ProviderClaude`, `ProviderCodex`) with `validate()` gating all `OpenStore` calls. Backends: `store_darwin.go` keychain at `aistat:accounts:<provider>:<opaque-key>` plus an `index` item and process flock on `$CACHE/aistat/store.lock`; `store_file.go` (`linux || windows`) JSON at `~/.config/aistat/accounts/<provider>.json` (`%USERPROFILE%\.config\...` on Windows) locking a `.<provider>.lock` sentinel (not the data file, which survives atomic rename) via `syscall.Flock` (`store_file_unix.go`) or `winlock.Lock` (`store_file_windows.go`); `MemoryStore` for tests. The shared body exposes a `withLock(exclusive bool, …)` seam so the lock primitive is the only per-OS code.
+- [internal/address/](internal/address/) — the sole owner of Claude selector formatting and matching: `AddressFor` (the canonical printed `<email>/personal-<short-account-id>` or `<email>/<slug>-<short-org-id>` address), `AccountLabel` (canonical address, else the legacy `<email> (uuid <uuid>)` display), and `Match` (slash-address, bare slug, UUID prefix, email substring; it returns every match and the caller decides whether the result is unambiguous). Pure functions over `[]accounts.Account`; no I/O and no provider calls. There is deliberately no cmd-local or renderer-local address logic: `cmd/aistat` (`accounts.go`, `switch.go`) calls `address.Match` / `address.AccountLabel`, `accounts` stays storage-only (`Account.Key()` has no `Address` counterpart), and `render` consumes the populated identity fields rather than reimplementing a formatter.
 - [internal/providers/](internal/providers/) — one subpackage per provider (`claude`, `codex`, `copilot`). Each owns its credential source, HTTP calls, and response normalization into the shared `Limit` type in [types.go](internal/providers/types.go). `AccountResult` lives here too — same type carried on both `ProviderOutput` (in-process) and `ProviderResult` (JSON-serialized).
-- [internal/providers/usagecache/](internal/providers/usagecache/) — provider-neutral 90 s file-backed usage cache. `New(provider, nowFn, warnFn)` validates the provider char-set and writes `$CACHE/aistat/usage/<provider>-v1.json` with `<provider>.cache.lock`. Warn strings include the provider name.
+- [internal/providers/usagecache/](internal/providers/usagecache/) — provider-neutral 90 s file-backed usage cache. `New(provider, nowFn, warnFn)` validates the provider char-set and writes `$CACHE/aistat/usage/<provider>-v1.json` with `<provider>.cache.lock`; per-account entries are keyed by the opaque stored account key. Warn strings include the provider name.
 - [internal/providers/multiaccount/](internal/providers/multiaccount/) — provider-neutral helpers consumed by both Claude and Codex multi-account `Fetch`: `SortAccountResults`, `RecordFetchOutcome`, `RecomputeResetAfter`, `Budget(base, perAccount, count)`.
 - [internal/providers/claude/](internal/providers/claude/) — Claude's multi-account machinery: [claude.go](internal/providers/claude/claude.go) (Fetch + FetchForSwitch + cache wiring), [profile.go](internal/providers/claude/profile.go) (identity endpoint), [refresh.go](internal/providers/claude/refresh.go) (OAuth refresh), [reconcile.go](internal/providers/claude/reconcile.go) (pure decision tree: byte-match → profile lookup → fallback), [account.go](internal/providers/claude/account.go) (`StoredAccessToken` / `StoredRefreshToken` / `StoredExpiresAt` token-parsing helpers operating on the opaque `accounts.Account`). `claude.go` also parses the usage response's `limits` array: account-wide `session` and `weekly_all` entries backfill missing `five_hour` and `seven_day` windows, with top-level values taking precedence. These windows drive switching: `scoreAccount` ranks auto-pick by `five_hour` remaining, `longKeys` checks `seven_day` exhaustion, and both feed the `--if-above-*` thresholds. Model-scoped `weekly_scoped` entries surface as informational `seven_day_<model>` windows in `usage` (keyed off `scope.model.display_name`, rendered generically so a model rename degrades gracefully).
 - [internal/providers/codex/](internal/providers/codex/) — Codex's multi-account machinery, structurally a mirror of Claude's: [codex.go](internal/providers/codex/codex.go) (Fetch + FetchForSwitch + cache wiring + `rotateRawBlob`), [refresh.go](internal/providers/codex/refresh.go) (OAuth refresh against `https://auth.openai.com/oauth/token` with client_id confirmed via Codex binary inspection), [reconcile.go](internal/providers/codex/reconcile.go) (pure decision tree: byte-match → JWT `sub` lookup → live-unstored), [account.go](internal/providers/codex/account.go) (Codex-shaped `Stored*` helpers). `StoredExpiresAt` decodes expiry from the **access_token** JWT's `exp` (via `cred.ParseJWTExp`) — the long-lived API credential — NOT the short-lived OIDC `id_token`, which is identity-only (gating on the id_token's ~1 h `exp` made the refresh gate fire on every run). Identity is the `sub` claim of the OIDC `id_token` — no network endpoint, JWT-payload decode only. Slot-vs-duration window labelling is by `limit_window_seconds`, NOT by slot position, so free-account weekly windows that land in the primary slot are not mislabelled as `five_hour`.
@@ -68,9 +169,9 @@ These are the principles every change should respect. When in doubt, optimize fo
 
 - Fail closed with an actionable message — the error names the next command the user should run to recover. `claude /login`, `aistat usage` to refresh stored credentials, `codex login`, `gh auth refresh -s user`, etc.
 - One failing component never poisons another. Record its error in-band and keep the rest of the work going. For Claude / Codex multi-account: a single transient per-account failure does not flip the exit code.
-- `aistat switch` is the ONLY path that mutates the live credential (Claude Keychain item or `~/.codex/auth.json`); `aistat usage` is observation-only (modulo cache writes and refresh-rotation persistence). Switch's order-of-operations: read-only resolve active → pick target → write live (first mutation; on error, store untouched) → run the same write-capable Reconcile `usage` uses.
+- `aistat switch` is the ONLY path that mutates the live credential (Claude Keychain item or `~/.codex/auth.json`); `aistat usage` never writes the live credential, but it does persist to the account store (opportunistic capture/refresh of the active slot, refresh-token rotation, and promotion) and to the usage cache; on Darwin, `List` may also make one narrow best-effort compaction write for positively classified absent index entries (never fatal to the read, unlike a Keychain read error). Switch's order-of-operations: read-only resolve active → pick target → write live (first mutation; on error, store untouched) → run the same write-capable Reconcile `usage` uses.
 - `FetchForSwitch` performs NO refresh and NO store mutation. Stored accounts with expired or revoked access tokens are excluded from auto-pick with a per-account warn (and the user runs `aistat usage` or `codex login` / `claude /login` to recover). This prevents publishing stale rotated-away tokens to the live credential.
-- Per-account usage is cached for 90 seconds at `$CACHE/aistat/usage/<provider>-v1.json`, keyed by `account.uuid` (Claude's UUID is the OAuth profile UUID; Codex's UUID is the `id_token` `sub` claim). Both `aistat usage` (reporting) and `aistat switch`'s candidate / active-account reads go through the same `fetchLimitsCached` path. `aistat usage --refresh` bypasses the read path but still writes through.
+- Per-account usage is cached for 90 seconds at `$CACHE/aistat/usage/<provider>-v1.json`, keyed by opaque `Account.Key()` values. Claude's canonical key includes the profile organization UUID; a legacy Claude row remains bare. Codex's key is its bare `id_token.sub`. Both `aistat usage` (reporting) and `aistat switch`'s candidate / active-account reads go through the same `fetchLimitsCached` path. `aistat usage --refresh` bypasses the read path but still writes through.
 - All HTTP transient errors retry inside `httpx.Doer` (max 3 attempts, `Retry-After`-aware, ctx-deadline-respecting). Providers do not retry; the orchestrator does not retry. The Claude provider's `perAccountBudget = 15 s` is sized so the retry loop can honor one max-length `Retry-After: 10` sleep + slack on attempts 1+2 before `sleepWithCtx` short-circuits a second sleep.
 
 ### Maintainable
@@ -97,6 +198,6 @@ These are upstream OAuth-provider behaviors aistat cannot work around without re
 - Run `go test ./...` (and `go test -race ./...`) before declaring a change done. Use `go vet ./...` and `staticcheck` (pinned in CI to `2026.2.1`) for static checks. CI runs on both ubuntu-latest and macos-latest — fix Linux failures locally with `GOOS=linux go vet ./... && GOOS=linux ~/go/bin/staticcheck ./...`.
 - Lint with `golangci-lint run ./...` (and `--build-tags fake`), pinned in CI (`.github/workflows/lint.yml`) to `v2.12.2`; config in [.golangci.yml](.golangci.yml) (standard linter set, `std-error-handling` exclusion preset, `errcheck` relaxed in `_test.go`, `QF1001` suppressed to match the pinned standalone staticcheck). golangci-lint v2 bundles its own staticcheck, so the standalone `staticcheck` step is retained separately and pinned; keep both green.
 - Fake-mode smoke (`go build -tags=fake -o /tmp/aistat ./cmd/aistat && /tmp/aistat --fake`) renders all providers (Claude + Codex + Copilot) in JSON without touching real credentials; add `-h` for human-readable. Vet + staticcheck under `-tags=fake` are part of the smoke surface.
-- The Claude provider runs on macOS, Linux, and Windows. macOS reads/writes the Keychain item `Claude Code-credentials` (and the per-account store at service `aistat:accounts:claude:<uuid>`); Linux and Windows read/write `~/.claude/.credentials.json` (`%USERPROFILE%\.claude\.credentials.json`) — plaintext, same JSON shape — via the shared `keychain_file.go` (`linux || windows`), with the per-account store at `~/.config/aistat/accounts/claude.json`. The Codex provider is portable: live blob always `~/.codex/auth.json`, per-account store mirrors Claude's split (`aistat:accounts:codex:<sub>` on macOS, the file store on Linux/Windows). Copilot is portable. Windows file locking uses `internal/winlock` (`kernel32!LockFileEx` via stdlib `syscall`, no third-party dep); the usage cache and account store are the two lock users. Only genuinely-unsupported GOOS (e.g. freebsd) hit the `*_unsupported.go` / `cache_other.go` stubs.
+- The Claude provider runs on macOS, Linux, and Windows. macOS reads/writes the Keychain item `Claude Code-credentials` (and the per-account store at service `aistat:accounts:claude:<opaque-key>`); Linux and Windows read/write `~/.claude/.credentials.json` (`%USERPROFILE%\.claude\.credentials.json`) as plaintext with the same JSON shape, via the shared `keychain_file.go` (`linux || windows`), with the per-account store at `~/.config/aistat/accounts/claude.json`. The Codex provider is portable: live blob always `~/.codex/auth.json`, per-account store mirrors Claude's split (`aistat:accounts:codex:<sub>` on macOS, the file store on Linux/Windows). Copilot is portable. Windows file locking uses `internal/winlock` (`kernel32!LockFileEx` via stdlib `syscall`, no third-party dep); the usage cache and account store are the two lock users. Only genuinely unsupported GOOS (for example, freebsd) hit the `*_unsupported.go` / `cache_other.go` stubs.
 - The module path is `github.com/drogers0/aistat/v2`. Go 1.26+.
 - Live tests are gated behind env vars (`AISTAT_LIVE=1` for Claude multi-account smoke; `AISTAT_LIVE_KEYCHAIN=1` for darwin keychain write tests). CI does not set either.

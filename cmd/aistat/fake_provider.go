@@ -37,25 +37,33 @@ func (f *fakeProvider) Fetch(ctx context.Context) (providers.ProviderOutput, err
 	switch f.id {
 	case "claude":
 		activeLimits := map[string]providers.Limit{
-			"five_hour":        mk(2, 4*time.Hour+53*time.Minute),
+			"five_hour":        mk(12, 4*time.Hour+53*time.Minute),
 			"seven_day":        mk(21, 2*24*time.Hour+5*time.Hour),
-			"seven_day_sonnet": mk(0, 2*24*time.Hour+5*time.Hour),
+			"seven_day_sonnet": mk(4, 2*24*time.Hour+5*time.Hour),
 		}
 		return providers.ProviderOutput{
 			Limits: activeLimits,
 			Accounts: []providers.AccountResult{
 				{
-					Email:  "personal@example.com",
-					UUID:   "aaaaaaaa-1111-2222-3333-444444444444",
-					Plan:   "default_claude_max_5x",
-					Active: true,
-					Limits: activeLimits,
+					Email:            "fake@example.com",
+					UUID:             "aaaaaaaa-1111-2222-3333-444444444444",
+					Key:              "aaaaaaaa-1111-2222-3333-444444444444_7d3c58e9-6a2b-4f81-b771-1c9e5d3a7042",
+					Address:          "fake@example.com/personal-aaaaaaaa",
+					OrganizationName: "fake@example.com's Organization",
+					OrganizationType: "claude_max",
+					Plan:             "default_claude_max_5x",
+					Active:           true,
+					Limits:           activeLimits,
 				},
 				{
-					Email:  "work@example.com",
-					UUID:   "bbbbbbbb-5555-6666-7777-888888888888",
-					Plan:   "default_claude_max_20x",
-					Active: false,
+					Email:            "fake@example.com",
+					UUID:             "aaaaaaaa-1111-2222-3333-444444444444",
+					Key:              "aaaaaaaa-1111-2222-3333-444444444444_550e8400-e29b-41d4-a716-446655440000",
+					Address:          "fake@example.com/engineering-550e8400",
+					OrganizationName: "Engineering",
+					OrganizationType: "claude_team",
+					Plan:             "default_claude_max_20x",
+					Active:           false,
 					Limits: map[string]providers.Limit{
 						"five_hour": mk(71, 5*time.Minute),
 						"seven_day": mk(44, 5*24*time.Hour+9*time.Hour),
@@ -74,6 +82,7 @@ func (f *fakeProvider) Fetch(ctx context.Context) (providers.ProviderOutput, err
 				{
 					Email:  "user@codex.example.com",
 					UUID:   "cccccccc-1111-2222-3333-444444444444",
+					Key:    "cccccccc-1111-2222-3333-444444444444",
 					Active: true,
 					Limits: codexLimits,
 				},

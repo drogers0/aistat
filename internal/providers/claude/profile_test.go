@@ -33,65 +33,48 @@ func TestProfileGet(t *testing.T) {
 		{"full schema", func(t *testing.T) {
 			body := []byte(`{
 			"account": {
-				"uuid": "acct-uuid-1",
-				"email": "user@example.com",
-				"display_name": "Test User",
-				"full_name": "Test User Full"
+				"uuid": "9f2a41c7-3b5d-4e7f-9a1c-2d4e6f8a0b1c",
+				"email": "me@example.com",
+				"display_name": "Example User"
 			},
 			"organization": {
-				"uuid": "org-uuid-1",
-				"name": "Acme Corp",
-				"rate_limit_tier": "claude_max_5x"
-			},
-			"application": {"uuid": "app-uuid-1", "name": "Claude Code", "slug": "claude-code"}
+				"uuid": "7d3c58e9-6a2b-4f81-b771-1c9e5d3a7042",
+				"name": "me@example.com's Organization",
+				"organization_type": "claude_max",
+				"seat_tier": null,
+				"rate_limit_tier": "default_claude_max_5x",
+				"has_extra_usage_enabled": true,
+				"subscription_status": "active"
+			}
 		}`)
 			pc := newTestProfileClient(t, body, 200)
 			prof, err := pc.Get(context.Background(), "tok-test")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if prof.AccountUUID != "acct-uuid-1" {
-				t.Errorf("AccountUUID = %q, want %q", prof.AccountUUID, "acct-uuid-1")
+			if prof.AccountUUID != "9f2a41c7-3b5d-4e7f-9a1c-2d4e6f8a0b1c" {
+				t.Errorf("AccountUUID = %q", prof.AccountUUID)
 			}
-			if prof.Email != "user@example.com" {
-				t.Errorf("Email = %q, want %q", prof.Email, "user@example.com")
+			if prof.Email != "me@example.com" {
+				t.Errorf("Email = %q", prof.Email)
 			}
-			if prof.DisplayName != "Test User" {
-				t.Errorf("DisplayName = %q, want %q", prof.DisplayName, "Test User")
+			if prof.DisplayName != "Example User" {
+				t.Errorf("DisplayName = %q", prof.DisplayName)
 			}
-			if prof.RateLimitTier != "claude_max_5x" {
-				t.Errorf("RateLimitTier = %q, want %q", prof.RateLimitTier, "claude_max_5x")
+			if prof.RateLimitTier != "default_claude_max_5x" {
+				t.Errorf("RateLimitTier = %q", prof.RateLimitTier)
 			}
-		}},
-		{"empty uuid", func(t *testing.T) {
-			body := []byte(`{
-			"account": {
-				"uuid": "",
-				"email": "user@example.com",
-				"display_name": "Test User"
-			}
-		}`)
-			pc := newTestProfileClient(t, body, 200)
-			_, err := pc.Get(context.Background(), "tok-test")
-			if !errors.Is(err, ErrProfileMissingFields) {
-				t.Errorf("expected ErrProfileMissingFields, got: %v", err)
+			if prof.OrganizationUUID != "7d3c58e9-6a2b-4f81-b771-1c9e5d3a7042" || prof.OrganizationName != "me@example.com's Organization" || prof.OrganizationType != "claude_max" {
+				t.Errorf("organization = %#v", prof)
 			}
 		}},
-		{"empty email", func(t *testing.T) {
-			body := []byte(`{
-			"account": {
-				"uuid": "acct-uuid-1",
-				"email": "",
-				"display_name": "Test User"
-			}
-		}`)
-			pc := newTestProfileClient(t, body, 200)
-			_, err := pc.Get(context.Background(), "tok-test")
-			if !errors.Is(err, ErrProfileMissingFields) {
-				t.Errorf("expected ErrProfileMissingFields, got: %v", err)
-			}
+		{"missing account UUID", func(t *testing.T) {
+			assertProfileMissingFields(t, `{"account":{"uuid":"","email":"user@example.com"}}`, `profile response missing required fields (account.uuid/account.email/organization.uuid): got uuid="" email="user@example.com" organization.uuid=""`)
 		}},
-		{"personal account no organization", func(t *testing.T) {
+		{"missing account email", func(t *testing.T) {
+			assertProfileMissingFields(t, `{"account":{"uuid":"acct-uuid-1","email":""}}`, `profile response missing required fields (account.uuid/account.email/organization.uuid): got uuid="acct-uuid-1" email="" organization.uuid=""`)
+		}},
+		{"nil organization uses sentinel", func(t *testing.T) {
 			body := []byte(`{
 			"account": {
 				"uuid": "acct-uuid-personal",
@@ -104,12 +87,21 @@ func TestProfileGet(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if prof.RateLimitTier != "" {
-				t.Errorf("RateLimitTier = %q, want empty string for personal account", prof.RateLimitTier)
+			if prof.OrganizationUUID != "personal" {
+				t.Errorf("OrganizationUUID = %q, want personal sentinel", prof.OrganizationUUID)
 			}
-			if prof.AccountUUID != "acct-uuid-personal" {
-				t.Errorf("AccountUUID = %q, want %q", prof.AccountUUID, "acct-uuid-personal")
-			}
+		}},
+		{"organization UUID empty", func(t *testing.T) {
+			assertProfileMissingFields(t, `{"account":{"uuid":"acct-uuid-1","email":"user@example.com"},"organization":{"uuid":""}}`, `profile response missing required fields (account.uuid/account.email/organization.uuid): got uuid="acct-uuid-1" email="user@example.com" organization.uuid=""`)
+		}},
+		{"organization UUID personal", func(t *testing.T) {
+			assertProfileMissingFields(t, `{"account":{"uuid":"acct-uuid-1","email":"user@example.com"},"organization":{"uuid":"personal"}}`, `profile response missing required fields (account.uuid/account.email/organization.uuid): got uuid="acct-uuid-1" email="user@example.com" organization.uuid="personal"`)
+		}},
+		{"organization UUID non-UUID", func(t *testing.T) {
+			assertProfileMissingFields(t, `{"account":{"uuid":"acct-uuid-1","email":"user@example.com"},"organization":{"uuid":"not-a-uuid"}}`, `profile response missing required fields (account.uuid/account.email/organization.uuid): got uuid="acct-uuid-1" email="user@example.com" organization.uuid="not-a-uuid"`)
+		}},
+		{"organization UUID malformed RFC-4122", func(t *testing.T) {
+			assertProfileMissingFields(t, `{"account":{"uuid":"acct-uuid-1","email":"user@example.com"},"organization":{"uuid":"7d3c58e9-6a2b-9f81-c771-1c9e5d3a7042"}}`, `profile response missing required fields (account.uuid/account.email/organization.uuid): got uuid="acct-uuid-1" email="user@example.com" organization.uuid="7d3c58e9-6a2b-9f81-c771-1c9e5d3a7042"`)
 		}},
 		{"401 wraps ErrAuthDenied", func(t *testing.T) {
 			pc := newTestProfileClient(t, []byte(`{"error":"unauthorized"}`), 401)
@@ -139,5 +131,17 @@ func TestProfileGet(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.run)
+	}
+}
+
+func assertProfileMissingFields(t *testing.T, body, want string) {
+	t.Helper()
+	pc := newTestProfileClient(t, []byte(body), http.StatusOK)
+	_, err := pc.Get(context.Background(), "tok-test")
+	if !errors.Is(err, ErrProfileMissingFields) {
+		t.Fatalf("errors.Is(..., ErrProfileMissingFields) = false: %v", err)
+	}
+	if err.Error() != want {
+		t.Errorf("error = %q, want %q", err, want)
 	}
 }

@@ -39,9 +39,10 @@ func TestText(t *testing.T) {
 						},
 						Accounts: []providers.AccountResult{
 							{
-								Email:  "me@personal.com",
-								Plan:   "default_claude_max_5x",
-								Active: true,
+								Email:            "me@personal.com",
+								Plan:             "default_claude_max_5x",
+								Active:           true,
+								OrganizationType: "claude_max",
 								Limits: map[string]providers.Limit{
 									"five_hour":        mkLimit(2, 4*3600+53*60),
 									"seven_day":        mkLimit(21, 2*86400+5*3600),
@@ -49,9 +50,11 @@ func TestText(t *testing.T) {
 								},
 							},
 							{
-								Email:  "me@work.company.com",
-								Plan:   "default_claude_max_20x",
-								Active: false,
+								Email:            "me@work.company.com",
+								Plan:             "default_claude_max_20x",
+								Active:           false,
+								OrganizationName: "Work Company",
+								OrganizationType: "claude_team",
 								Limits: map[string]providers.Limit{
 									"five_hour": mkLimit(71, 5*60),
 								},
@@ -259,18 +262,21 @@ func TestText(t *testing.T) {
 				Providers: map[string]providers.ProviderResult{
 					"claude": {Accounts: []providers.AccountResult{
 						{
-							Email:  "a@work.com",
-							Plan:   "default_claude_max_20x",
-							Active: true,
+							Email:            "a@work.com",
+							Plan:             "default_claude_max_20x",
+							Active:           true,
+							OrganizationName: "Work",
+							OrganizationType: "claude_team",
 							Limits: map[string]providers.Limit{
 								"five_hour": mkLimit(10, 3600),
 								"seven_day": mkLimit(5, 2*86400+3*3600),
 							},
 						},
 						{
-							Email:  "b@personal.com",
-							Plan:   "default_claude_max_5x",
-							Active: false,
+							Email:            "b@personal.com",
+							Plan:             "default_claude_max_5x",
+							Active:           false,
+							OrganizationType: "claude_max",
 							Limits: map[string]providers.Limit{
 								"five_hour": mkLimit(90, 600),
 							},
@@ -328,6 +334,30 @@ func TestText(t *testing.T) {
 			want := "Claude usage\n- err@example.com (active) [Pro]: usage fetch timed out\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
+			}
+		}},
+		{"claude organization contexts and raven label", func(t *testing.T) {
+			r := providers.Report{Providers: map[string]providers.ProviderResult{
+				"claude": {Accounts: []providers.AccountResult{
+					{Email: "team@example.com", Plan: "default_raven", Active: true, OrganizationName: "Acme", OrganizationType: "claude_team", Limits: map[string]providers.Limit{}},
+					{Email: "me@example.com", Plan: "default_claude_max_5x", Active: true, OrganizationName: "me@example.com's Organization", OrganizationType: "claude_max", Limits: map[string]providers.Limit{}},
+					{Email: "unknown@example.com", Plan: "default_claude_pro", OrganizationName: "Raven Lab", OrganizationType: "raven", Limits: map[string]providers.Limit{}},
+					{Email: "unnamed@example.com", Plan: "default_claude_pro", OrganizationType: "", Limits: map[string]providers.Limit{}},
+					{Email: "empty-team@example.com", Plan: "default_claude_pro", OrganizationType: "claude_team", Limits: map[string]providers.Limit{}},
+					{Email: "sentinel@example.com", Plan: "default_claude_pro", Address: "sentinel@example.com/personal-aaaaaaaa", Limits: map[string]providers.Limit{}},
+				}},
+			}}
+			var buf bytes.Buffer
+			testutil.WantNoErr(t, Text(&buf, r, []string{"claude"}))
+			const want = "Claude usage\n" +
+				"- team@example.com (active) [Raven] (Acme, team)\n" +
+				"- me@example.com (active) [Max 5x] (personal)\n" +
+				"- unknown@example.com [Pro] (Raven Lab)\n" +
+				"- unnamed@example.com [Pro]\n" +
+				"- empty-team@example.com [Pro]\n" +
+				"- sentinel@example.com [Pro] (personal)\n"
+			if buf.String() != want {
+				t.Fatalf("context rows = %q, want %q", buf.String(), want)
 			}
 		}},
 		{"claude accounts unknown tier", func(t *testing.T) {

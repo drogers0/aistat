@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -67,11 +68,21 @@ func stubSequentialServer(t *testing.T, responses []struct {
 	return srv
 }
 
+func recordingUsageServer(t *testing.T, requests *[]string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*requests = append(*requests, r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(minUsageBody)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
 // profileBody builds a minimal valid /api/oauth/profile response JSON.
-func profileBody(uuid, email, rateLimitTier string) []byte {
+func profileBody(uuid, email, _ string) []byte {
 	b, _ := json.Marshal(map[string]any{
-		"account":      map[string]any{"uuid": uuid, "email": email, "display_name": email},
-		"organization": map[string]any{"rate_limit_tier": rateLimitTier},
+		"account": map[string]any{"uuid": uuid, "email": email, "display_name": email},
 	})
 	return b
 }
@@ -178,8 +189,8 @@ func runFetch(t *testing.T, o fetchOpts) (providers.ProviderOutput, error) {
 	return buildClient(t, o.usage, o.profile, o.refresh, o.live, o.store, o.warn, o.now).Fetch(context.Background())
 }
 
-// storeUUIDSet returns the set of UUIDs currently in the store.
-func storeUUIDSet(t *testing.T, s *accounts.MemoryStore) map[string]bool {
+// storeKeySet returns the set of opaque keys currently in the store.
+func storeKeySet(t *testing.T, s *accounts.MemoryStore) map[string]bool {
 	t.Helper()
 	accts, err := s.List(context.Background())
 	if err != nil {
@@ -187,9 +198,331 @@ func storeUUIDSet(t *testing.T, s *accounts.MemoryStore) map[string]bool {
 	}
 	set := map[string]bool{}
 	for _, a := range accts {
-		set[a.UUID] = true
+		set[a.Key()] = true
 	}
 	return set
+}
+
+type orderedPromotionStore struct {
+	store      *accounts.MemoryStore
+	order      []string
+	promotions []accounts.Promotion
+}
+
+type orderedAccountStore struct {
+	store accounts.Store
+	order []string
+}
+
+func (s *orderedAccountStore) List(ctx context.Context) ([]accounts.Account, error) {
+	stored, err := s.store.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	byKey := make(map[string]accounts.Account, len(stored))
+	for _, account := range stored {
+		byKey[account.Key()] = account
+	}
+	ordered := make([]accounts.Account, 0, len(stored))
+	for _, key := range s.order {
+		if account, ok := byKey[key]; ok {
+			ordered = append(ordered, account)
+			delete(byKey, key)
+		}
+	}
+	for _, account := range byKey {
+		ordered = append(ordered, account)
+	}
+	return ordered, nil
+}
+
+func (s *orderedAccountStore) Upsert(ctx context.Context, account accounts.Account) error {
+	return s.store.Upsert(ctx, account)
+}
+
+func (s *orderedAccountStore) Delete(ctx context.Context, key string) error {
+	return s.store.Delete(ctx, key)
+}
+
+func (s *orderedAccountStore) Promote(ctx context.Context, instruction accounts.Promotion) (accounts.PromotionResult, error) {
+	return s.store.Promote(ctx, instruction)
+}
+
+type verificationFailStore struct {
+	store       *accounts.MemoryStore
+	result      accounts.PromotionResult
+	promoteErr  error
+	promoted    bool
+	upsertCalls int
+}
+
+func (s *verificationFailStore) List(ctx context.Context) ([]accounts.Account, error) {
+	if s.promoted {
+		return nil, errors.New("verification list failed")
+	}
+	return s.store.List(ctx)
+}
+
+func (s *verificationFailStore) Upsert(ctx context.Context, account accounts.Account) error {
+	s.upsertCalls++
+	return s.store.Upsert(ctx, account)
+}
+
+func (s *verificationFailStore) Delete(ctx context.Context, key string) error {
+	return s.store.Delete(ctx, key)
+}
+
+func (s *verificationFailStore) Promote(ctx context.Context, instruction accounts.Promotion) (accounts.PromotionResult, error) {
+	s.promoted = true
+	if s.result == accounts.PromotionCompleted && s.promoteErr == nil {
+		return s.store.Promote(ctx, instruction)
+	}
+	return s.result, s.promoteErr
+}
+
+func (s *orderedPromotionStore) List(ctx context.Context) ([]accounts.Account, error) {
+	stored, err := s.store.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	byKey := make(map[string]accounts.Account, len(stored))
+	for _, account := range stored {
+		byKey[account.Key()] = account
+	}
+	ordered := make([]accounts.Account, 0, len(stored))
+	for _, key := range s.order {
+		if account, ok := byKey[key]; ok {
+			ordered = append(ordered, account)
+			delete(byKey, key)
+		}
+	}
+	for _, account := range byKey {
+		ordered = append(ordered, account)
+	}
+	return ordered, nil
+}
+
+func (s *orderedPromotionStore) Upsert(ctx context.Context, account accounts.Account) error {
+	return s.store.Upsert(ctx, account)
+}
+
+func (s *orderedPromotionStore) Delete(ctx context.Context, key string) error {
+	return s.store.Delete(ctx, key)
+}
+
+func (s *orderedPromotionStore) Promote(ctx context.Context, instruction accounts.Promotion) (accounts.PromotionResult, error) {
+	s.promotions = append(s.promotions, instruction)
+	return s.store.Promote(ctx, instruction)
+}
+
+func TestFetch_legacyPromotionRetriesIndependentOfListOrder(t *testing.T) {
+	accountUUID := "550e8400-e29b-41d4-a716-446655440000"
+	organizationUUID := "7d3c58e9-6a2b-4f81-b771-1c9e5d3a7042"
+	profileJSON := []byte(`{"account":{"uuid":"550e8400-e29b-41d4-a716-446655440000","email":"person@example.com","display_name":"Person"},"organization":{"uuid":"7d3c58e9-6a2b-4f81-b771-1c9e5d3a7042","name":"Acme","organization_type":"claude_team","rate_limit_tier":"default_claude_max_5x"}}`)
+
+	tests := []struct {
+		name  string
+		order func(source, destination string) []string
+	}{
+		{"legacy then canonical", func(source, destination string) []string { return []string{source, destination} }},
+		{"canonical then legacy", func(source, destination string) []string { return []string{destination, source} }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			live := makeCred("shared-access", "refresh-b", 0)
+			source := makeAccount(accountUUID, "old@example.com", "shared-access", "refresh-a", 0)
+			source.OrganizationUUID = ""
+			destination := makeAccount(accountUUID, "stale@example.com", "shared-access", "refresh-b", 0)
+			destination.OrganizationUUID = organizationUUID
+			destination.OrganizationName = "old Acme"
+			destination.OrganizationType = "claude_team"
+			store := &orderedPromotionStore{store: testutil.MemStore(t, source, destination), order: tt.order(source.Key(), destination.Key())}
+
+			prePromotion := Reconcile(ReconcileInput{
+				LiveBlob: live,
+				Stored: func() []accounts.Account {
+					accounts, err := store.List(context.Background())
+					if err != nil {
+						t.Fatal(err)
+					}
+					return accounts
+				}(),
+				LookupProfile: fixedProfile(Profile{AccountUUID: accountUUID, Email: "person@example.com", DisplayName: "Person", RateLimitTier: "default_claude_max_5x", OrganizationUUID: organizationUUID, OrganizationName: "Acme", OrganizationType: "claude_team"}),
+				Now:           testNow,
+			})
+			if prePromotion.ActiveKey != "550e8400-e29b-41d4-a716-446655440000" {
+				t.Fatalf("active key before promotion = %q, want legacy source", prePromotion.ActiveKey)
+			}
+			if prePromotion.Promotion == nil {
+				t.Fatal("promotion instruction is nil")
+			}
+
+			usageSrv := testutil.NewStubServer(t, minUsageBody, http.StatusOK, nil)
+			profileSrv, profileCalls := testutil.CountingServer(t, http.StatusOK, profileJSON)
+			refreshSrv := testutil.RejectServer(t, "refresh")
+			out, err := buildClient(t, usageSrv, profileSrv, refreshSrv, live, store, nil, nil).Fetch(context.Background())
+			testutil.WantNoErr(t, err)
+			if len(store.promotions) != 1 {
+				t.Fatalf("Promote calls = %d, want 1", len(store.promotions))
+			}
+			if profileCalls.Load() != 1 {
+				t.Fatalf("profile calls = %d, want 1", profileCalls.Load())
+			}
+			promotion := store.promotions[0]
+			if promotion.SourceKey != "550e8400-e29b-41d4-a716-446655440000" {
+				t.Errorf("promotion source = %q, want legacy source", promotion.SourceKey)
+			}
+			if !bytes.Equal(promotion.ObservedSourceRawBlob, source.RawBlob) {
+				t.Errorf("observed source blob = %s, want A %s", promotion.ObservedSourceRawBlob, source.RawBlob)
+			}
+			if !promotion.ExpectedDestinationPresent || !bytes.Equal(promotion.ExpectedDestinationRawBlob, destination.RawBlob) {
+				t.Errorf("destination snapshot = (%t, %s), want (true, B %s)", promotion.ExpectedDestinationPresent, promotion.ExpectedDestinationRawBlob, destination.RawBlob)
+			}
+			if promotion.Destination.Key() != "550e8400-e29b-41d4-a716-446655440000_7d3c58e9-6a2b-4f81-b771-1c9e5d3a7042" || !bytes.Equal(promotion.Destination.RawBlob, live.Raw) {
+				t.Errorf("promotion destination = (%q, %s), want canonical K with B %s", promotion.Destination.Key(), promotion.Destination.RawBlob, live.Raw)
+			}
+			stored, listErr := store.List(context.Background())
+			testutil.WantNoErr(t, listErr)
+			if len(stored) != 1 || stored[0].Key() != "550e8400-e29b-41d4-a716-446655440000_7d3c58e9-6a2b-4f81-b771-1c9e5d3a7042" || !bytes.Equal(stored[0].RawBlob, live.Raw) {
+				t.Fatalf("post-retry store = %#v, want only refreshed K", stored)
+			}
+			if len(out.Accounts) != 1 || out.Accounts[0].Key != "550e8400-e29b-41d4-a716-446655440000_7d3c58e9-6a2b-4f81-b771-1c9e5d3a7042" || !out.Accounts[0].Active {
+				t.Fatalf("post-retry result = %#v, want active K", out.Accounts)
+			}
+		})
+	}
+}
+
+func TestClaudeAccountResultContextFields(t *testing.T) {
+	tests := []struct {
+		name       string
+		account    accounts.Account
+		wantAddr   string
+		wantName   string
+		wantType   string
+		wantKey    string
+		wantActive bool
+	}{
+		{
+			name: "observed max context",
+			account: accounts.Account{
+				UUID:             "9f2a41c7-3b5d-4e7f-9a1c-2d4e6f8a0b1c",
+				Email:            "me@example.com",
+				RateLimitTier:    "default_claude_max_5x",
+				OrganizationUUID: "7d3c58e9-6a2b-4f81-b771-1c9e5d3a7042",
+				OrganizationName: "me@example.com's Organization",
+				OrganizationType: "claude_max",
+			},
+			wantAddr:   "me@example.com/personal-9f2a41c7",
+			wantName:   "me@example.com's Organization",
+			wantType:   "claude_max",
+			wantKey:    "9f2a41c7-3b5d-4e7f-9a1c-2d4e6f8a0b1c_7d3c58e9-6a2b-4f81-b771-1c9e5d3a7042",
+			wantActive: true,
+		},
+		{
+			name: "organization address uses current email",
+			account: accounts.Account{
+				UUID:             "aaaaaaaa-1111-4111-8111-111111111111",
+				Email:            "current@example.com",
+				OrganizationUUID: "4b8e12d0-2222-4222-8222-222222222222",
+				OrganizationName: "Acme",
+				OrganizationType: "claude_team",
+			},
+			wantAddr:   "current@example.com/acme-4b8e12d0",
+			wantName:   "Acme",
+			wantType:   "claude_team",
+			wantKey:    "aaaaaaaa-1111-4111-8111-111111111111_4b8e12d0-2222-4222-8222-222222222222",
+			wantActive: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := claudeAccountResult([]accounts.Account{tt.account}, tt.account, true)
+			if got.Address != tt.wantAddr || got.OrganizationName != tt.wantName || got.OrganizationType != tt.wantType || got.Key != tt.wantKey || got.Active != tt.wantActive {
+				t.Fatalf("AccountResult = %#v", got)
+			}
+		})
+	}
+}
+
+func TestFetch_sameEmailContextsHaveExactlyOneActiveRow(t *testing.T) {
+	first := makeAccount("550e8400-e29b-41d4-a716-446655440000", "same@example.com", "tok-first", "ref-first", 0)
+	first.OrganizationUUID = "11111111-1111-4111-8111-111111111111"
+	first.OrganizationName = "First"
+	first.OrganizationType = "claude_team"
+	second := makeAccount("550e8400-e29b-41d4-a716-446655440000", "same@example.com", "tok-second", "ref-second", 0)
+	second.OrganizationUUID = "22222222-2222-4222-8222-222222222222"
+	second.OrganizationName = "Second"
+	second.OrganizationType = "claude_team"
+
+	out, err := runFetch(t, fetchOpts{
+		live:  makeCred("tok-first", "ref-first", 0),
+		store: testutil.MemStore(t, first, second),
+	})
+	testutil.WantNoErr(t, err)
+	var activeKeys []string
+	for _, result := range out.Accounts {
+		if result.Active {
+			activeKeys = append(activeKeys, result.Key)
+		}
+	}
+	if got, want := activeKeys, []string{"550e8400-e29b-41d4-a716-446655440000_11111111-1111-4111-8111-111111111111"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("active keys = %v, want %v", got, want)
+	}
+}
+
+func TestFetch_promotionVerificationFailureUsesOnlyKnownDurableState(t *testing.T) {
+	accountUUID := "550e8400-e29b-41d4-a716-446655440000"
+	organizationUUID := "7d3c58e9-6a2b-4f81-b771-1c9e5d3a7042"
+	profileJSON := []byte(`{"account":{"uuid":"550e8400-e29b-41d4-a716-446655440000","email":"person@example.com","display_name":"Person"},"organization":{"uuid":"7d3c58e9-6a2b-4f81-b771-1c9e5d3a7042","name":"Acme","organization_type":"claude_team","rate_limit_tier":"default_claude_max_5x"}}`)
+	tests := []struct {
+		name        string
+		result      accounts.PromotionResult
+		promoteErr  error
+		synthesized bool
+		warn        string
+	}{
+		{"completed synthesizes canonical", accounts.PromotionCompleted, nil, true, ""},
+		{"source changed falls back", accounts.PromotionSourceChanged, nil, false, "aistat: claude: could not promote legacy account 550e8400-e29b-41d4-a716-446655440000 to 550e8400-e29b-41d4-a716-446655440000_7d3c58e9-6a2b-4f81-b771-1c9e5d3a7042: source changed; leaving existing slots untouched\n"},
+		{"destination changed falls back", accounts.PromotionDestinationChanged, nil, false, "aistat: claude: could not promote legacy account 550e8400-e29b-41d4-a716-446655440000 to 550e8400-e29b-41d4-a716-446655440000_7d3c58e9-6a2b-4f81-b771-1c9e5d3a7042: destination changed; leaving existing slots untouched\n"},
+		{"completed with error falls back", accounts.PromotionCompleted, errors.New("disk failed"), false, "aistat: claude: could not promote legacy account 550e8400-e29b-41d4-a716-446655440000 to 550e8400-e29b-41d4-a716-446655440000_7d3c58e9-6a2b-4f81-b771-1c9e5d3a7042: disk failed; store may require recovery\n"},
+		{"unspecified falls back", accounts.PromotionResultUnspecified, nil, false, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			live := makeCred("shared-access", "refresh-b", 0)
+			source := makeAccount(accountUUID, "old@example.com", "shared-access", "refresh-a", 0)
+			source.OrganizationUUID = ""
+			destination := makeAccount(accountUUID, "stale@example.com", "shared-access", "refresh-b", 0)
+			destination.OrganizationUUID = organizationUUID
+			store := &verificationFailStore{store: testutil.MemStore(t, source, destination), result: tt.result, promoteErr: tt.promoteErr}
+			usageSrv := testutil.NewStubServer(t, minUsageBody, http.StatusOK, nil)
+			profileSrv := testutil.NewStubServer(t, profileJSON, http.StatusOK, nil)
+			refreshSrv := testutil.RejectServer(t, "refresh")
+			var warnings bytes.Buffer
+			client := buildClient(t, usageSrv, profileSrv, refreshSrv, live, store, &warnings, nil)
+			out, err := client.Fetch(context.Background())
+			testutil.WantNoErr(t, err)
+			if store.upsertCalls != 0 {
+				t.Fatalf("stored-loop Upsert calls = %d, want 0", store.upsertCalls)
+			}
+			if _, ok := client.cache.Get("550e8400-e29b-41d4-a716-446655440000"); ok {
+				t.Fatal("legacy source cache key was written")
+			}
+			if tt.synthesized {
+				if len(out.Accounts) != 1 || out.Accounts[0].Key != "550e8400-e29b-41d4-a716-446655440000_7d3c58e9-6a2b-4f81-b771-1c9e5d3a7042" || !out.Accounts[0].Active {
+					t.Fatalf("synthesized result = %#v, want active canonical K", out.Accounts)
+				}
+				return
+			}
+			if len(out.Accounts) != 1 || out.Accounts[0].Email != "(live Claude account)" || out.Accounts[0].Key != "" || !out.Accounts[0].Active {
+				t.Fatalf("render-only fallback = %#v", out.Accounts)
+			}
+			if got := warnings.String(); got != tt.warn {
+				t.Errorf("warning = %q, want %q", got, tt.warn)
+			}
+		})
+	}
 }
 
 // sortedKeys returns the sorted keys of a map for deterministic assertions.
@@ -923,6 +1256,33 @@ func TestFetch_multi_account(t *testing.T) {
 	}
 }
 
+func TestFetch_keySortedRequestOrder(t *testing.T) {
+	tests := []struct {
+		name  string
+		order []string
+	}{
+		{"ascending input", []string{"11111111-1111-4111-8111-111111111111_personal", "22222222-2222-4222-8222-222222222222_personal"}},
+		{"descending input", []string{"22222222-2222-4222-8222-222222222222_personal", "11111111-1111-4111-8111-111111111111_personal"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			first := makeAccount("11111111-1111-4111-8111-111111111111", "same@example.com", "tok-first", "ref-first", 0)
+			second := makeAccount("22222222-2222-4222-8222-222222222222", "same@example.com", "tok-second", "ref-second", 0)
+			store := &orderedAccountStore{store: testutil.MemStore(t, first, second), order: tt.order}
+			var requests []string
+			usageSrv := recordingUsageServer(t, &requests)
+			out, err := runFetch(t, fetchOpts{usage: usageSrv, store: store})
+			testutil.WantNoErr(t, err)
+			if got, want := requests, []string{"Bearer tok-first", "Bearer tok-second"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("request bearer order = %v, want %v", got, want)
+			}
+			if got, want := []string{out.Accounts[0].Key, out.Accounts[1].Key}, []string{"11111111-1111-4111-8111-111111111111_personal", "22222222-2222-4222-8222-222222222222_personal"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("result key order = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
 func TestFetch_live(t *testing.T) {
 	tests := []struct {
 		name string
@@ -978,7 +1338,9 @@ func TestFetch_live(t *testing.T) {
 				t.Errorf("Email = %q, want fallback email", out.Accounts[0].Email)
 			}
 
-			wantWarn(t, &warnBuf, "missing required fields")
+			if got, want := warnBuf.String(), "aistat: claude: profile response missing required fields (account.uuid/account.email/organization.uuid); rendering live row without storing; file an issue at https://github.com/drogers0/aistat/issues\n"; got != want {
+				t.Errorf("warning = %q, want %q", got, want)
+			}
 			if strings.Contains(warnBuf.String(), "claude /login") {
 				t.Errorf("stricter diagnostic must not contain 'claude /login', got: %q", warnBuf.String())
 			}
@@ -1046,8 +1408,8 @@ func TestFetchForSwitch(t *testing.T) {
 			}
 
 			// Store must be unchanged (no Upsert calls).
-			uuids := storeUUIDSet(t, store)
-			if !uuids["uuid-active"] || !uuids["uuid-other"] {
+			uuids := storeKeySet(t, store)
+			if !uuids["uuid-active_personal"] || !uuids["uuid-other_personal"] {
 				t.Errorf("store changed after FetchForSwitch: %v", uuids)
 			}
 
@@ -1076,17 +1438,39 @@ func TestFetchForSwitch(t *testing.T) {
 				t.Errorf("rejected account should be excluded, got %d results", len(out))
 			}
 
-			wantWarn(t, &warnBuf, "stored credential rejected")
-			wantWarn(t, &warnBuf, "excluded from auto-pick")
+			if got, want := warnBuf.String(), "aistat: claude: bad@example.com/personal-uuidbad: stored credential rejected (run `aistat usage` to refresh); excluded from auto-pick\n"; got != want {
+				t.Errorf("warning = %q, want %q", got, want)
+			}
 
 			// Store unchanged.
-			uuids := storeUUIDSet(t, store)
-			if !uuids["uuid-active"] || !uuids["uuid-bad"] {
+			uuids := storeKeySet(t, store)
+			if !uuids["uuid-active_personal"] || !uuids["uuid-bad_personal"] {
 				t.Errorf("store changed after FetchForSwitch: %v", uuids)
 			}
 
 			if n := refreshCount.Load(); n != 0 {
 				t.Errorf("refresh server received %d requests, expected 0", n)
+			}
+		}},
+		{"revoked stored token", func(t *testing.T) {
+			live := makeCred("tok-active", "ref-active", 0)
+			store := testutil.MemStore(t,
+				makeAccount("uuid-active", "active@example.com", "tok-active", "ref-active", 0),
+				makeAccount("uuid-revoked", "revoked@example.com", "tok-revoked", "ref-revoked", 0),
+			)
+
+			usageSrv := testutil.NewStubServer(t, []byte(`{"error":"OAuth access token has been revoked."}`), http.StatusUnauthorized, nil)
+			profileSrv := testutil.RejectServer(t, "profile")
+			refreshSrv := testutil.RejectServer(t, "refresh")
+
+			var warnBuf bytes.Buffer
+			out, err := buildClient(t, usageSrv, profileSrv, refreshSrv, live, store, &warnBuf, nil).FetchForSwitch(context.Background())
+			testutil.WantNoErr(t, err)
+			if len(out) != 0 {
+				t.Errorf("revoked account should be excluded, got %d results", len(out))
+			}
+			if got, want := warnBuf.String(), "aistat: claude: revoked@example.com/personal-uuidrevo: stored credential rejected (run `claude /login` to recover); excluded from auto-pick\n"; got != want {
+				t.Errorf("warning = %q, want %q", got, want)
 			}
 		}},
 		{"transient exclusion", func(t *testing.T) {
@@ -1159,7 +1543,7 @@ func TestFetchForSwitch(t *testing.T) {
 			c := buildClient(t, usageSrv, profileSrv, refreshSrv, live, store, nil, nil)
 
 			// Pre-populate cache for the non-active account.
-			c.cache.Put("uuid-other", map[string]providers.Limit{
+			c.cache.Put("uuid-other_personal", map[string]providers.Limit{
 				"five_hour": {UsedPercent: 10, RemainingPercent: 90, ResetsAt: testNow.Add(time.Hour)},
 			})
 
@@ -1178,6 +1562,36 @@ func TestFetchForSwitch(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.run)
+	}
+}
+
+func TestFetchForSwitch_keySortedRequestOrder(t *testing.T) {
+	tests := []struct {
+		name  string
+		order []string
+	}{
+		{"ascending input", []string{"11111111-1111-4111-8111-111111111111_personal", "22222222-2222-4222-8222-222222222222_personal"}},
+		{"descending input", []string{"22222222-2222-4222-8222-222222222222_personal", "11111111-1111-4111-8111-111111111111_personal"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			first := makeAccount("11111111-1111-4111-8111-111111111111", "same@example.com", "tok-first", "ref-first", 0)
+			second := makeAccount("22222222-2222-4222-8222-222222222222", "same@example.com", "tok-second", "ref-second", 0)
+			store := &orderedAccountStore{store: testutil.MemStore(t, first, second), order: tt.order}
+			var requests []string
+			usageSrv := recordingUsageServer(t, &requests)
+			profileSrv := testutil.NewStubServer(t, profileBody("not-stored", "live@example.com", ""), http.StatusOK, nil)
+			refreshSrv := testutil.RejectServer(t, "refresh")
+			client := buildClient(t, usageSrv, profileSrv, refreshSrv, makeCred("tok-live", "ref-live", 0), store, nil, nil)
+			out, err := client.FetchForSwitch(context.Background())
+			testutil.WantNoErr(t, err)
+			if got, want := requests, []string{"Bearer tok-first", "Bearer tok-second"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("request bearer order = %v, want %v", got, want)
+			}
+			if got, want := []string{out[0].Key, out[1].Key}, []string{"11111111-1111-4111-8111-111111111111_personal", "22222222-2222-4222-8222-222222222222_personal"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("result key order = %v, want %v", got, want)
+			}
+		})
 	}
 }
 
@@ -1409,7 +1823,7 @@ func TestFetch_cache(t *testing.T) {
 			c := buildClient(t, usageSrv, profileSrv, refreshSrv, live, store, nil, nil)
 
 			// Pre-populate cache for acctA — only acctB should fire a fresh request.
-			c.cache.Put("uuid-a", map[string]providers.Limit{
+			c.cache.Put("uuid-a_personal", map[string]providers.Limit{
 				"five_hour": {UsedPercent: 30, RemainingPercent: 70, ResetsAt: testNow.Add(time.Hour), ResetAfterSeconds: 3600},
 			})
 
@@ -1424,6 +1838,41 @@ func TestFetch_cache(t *testing.T) {
 				if ar.UUID == "uuid-a" && ar.Error != "" {
 					t.Errorf("acctA (cache hit) should have no error, got: %q", ar.Error)
 				}
+			}
+		}},
+		{"same UUID different organizations use independent cache keys", func(t *testing.T) {
+			first := makeAccount("550e8400-e29b-41d4-a716-446655440000", "same@example.com", "tok-first", "ref-first", 0)
+			first.OrganizationUUID = "11111111-1111-4111-8111-111111111111"
+			first.OrganizationName = "First"
+			first.OrganizationType = "claude_team"
+			second := makeAccount("550e8400-e29b-41d4-a716-446655440000", "same@example.com", "tok-second", "ref-second", 0)
+			second.OrganizationUUID = "22222222-2222-4222-8222-222222222222"
+			second.OrganizationName = "Second"
+			second.OrganizationType = "claude_team"
+			store := testutil.MemStore(t, first, second)
+
+			usageSrv, usageCount := testutil.CountingServer(t, http.StatusOK, minUsageBody)
+			profileSrv := testutil.RejectServer(t, "profile")
+			refreshSrv := testutil.RejectServer(t, "refresh")
+			client := buildClient(t, usageSrv, profileSrv, refreshSrv, nil, store, nil, nil)
+			client.cache.Put("550e8400-e29b-41d4-a716-446655440000_11111111-1111-4111-8111-111111111111", map[string]providers.Limit{
+				"five_hour": {UsedPercent: 30, RemainingPercent: 70, ResetsAt: testNow.Add(time.Hour)},
+			})
+
+			out, err := client.Fetch(context.Background())
+			testutil.WantNoErr(t, err)
+			if got := usageCount.Load(); got != 1 {
+				t.Errorf("usage requests = %d, want 1 for only the uncached organization", got)
+			}
+			limitsByKey := map[string]float64{}
+			for _, result := range out.Accounts {
+				limitsByKey[result.Key] = result.Limits["five_hour"].UsedPercent
+			}
+			if got := limitsByKey["550e8400-e29b-41d4-a716-446655440000_11111111-1111-4111-8111-111111111111"]; got != 30 {
+				t.Errorf("first context used percent = %v, want 30 from its cache entry", got)
+			}
+			if got := limitsByKey["550e8400-e29b-41d4-a716-446655440000_22222222-2222-4222-8222-222222222222"]; got != 50 {
+				t.Errorf("second context used percent = %v, want 50 from its independent fetch", got)
 			}
 		}},
 		{"two accounts cache expired both fire", func(t *testing.T) {
@@ -1445,8 +1894,8 @@ func TestFetch_cache(t *testing.T) {
 
 			c := buildClient(t, usageSrv, profileSrv, refreshSrv, live, store, nil, nowFn)
 
-			c.cache.Put("uuid-a", map[string]providers.Limit{"five_hour": {ResetsAt: now.Add(time.Hour)}})
-			c.cache.Put("uuid-b", map[string]providers.Limit{"five_hour": {ResetsAt: now.Add(time.Hour)}})
+			c.cache.Put("uuid-a_personal", map[string]providers.Limit{"five_hour": {ResetsAt: now.Add(time.Hour)}})
+			c.cache.Put("uuid-b_personal", map[string]providers.Limit{"five_hour": {ResetsAt: now.Add(time.Hour)}})
 
 			// Advance clock past the 1 s TTL.
 			now = now.Add(2 * time.Second)
@@ -1477,7 +1926,7 @@ func TestFetch_cache(t *testing.T) {
 
 			// Put at T with ResetsAt = T + 60s; ResetAfterSeconds stored as 60.
 			resetsAt := now.Add(60 * time.Second)
-			c.cache.Put("uuid-a", map[string]providers.Limit{
+			c.cache.Put("uuid-a_personal", map[string]providers.Limit{
 				"five_hour": {UsedPercent: 50, RemainingPercent: 50, ResetsAt: resetsAt, ResetAfterSeconds: 60},
 			})
 
@@ -1546,7 +1995,7 @@ func TestFetch_cache(t *testing.T) {
 
 			// Pre-populate cache for uuid-a with original limits.
 			originalResetsAt := testNow.Add(time.Hour)
-			c.cache.Put("uuid-a", map[string]providers.Limit{
+			c.cache.Put("uuid-a_personal", map[string]providers.Limit{
 				"five_hour": {UsedPercent: 20, RemainingPercent: 80, ResetsAt: originalResetsAt, ResetAfterSeconds: 3600},
 			})
 
@@ -1744,7 +2193,7 @@ func TestNew(t *testing.T) {
 			c := buildClient(t, usageSrv, profileSrv, refreshSrv, live, store, nil, nil)
 
 			// Pre-populate cache for uuid-a.
-			c.cache.Put("uuid-a", map[string]providers.Limit{
+			c.cache.Put("uuid-a_personal", map[string]providers.Limit{
 				"five_hour": {UsedPercent: 99, RemainingPercent: 1, ResetsAt: testNow.Add(time.Hour)},
 			})
 
@@ -1758,7 +2207,7 @@ func TestNew(t *testing.T) {
 				t.Errorf("usage server requests = %d, want 1 (bypass skips cache read)", n)
 			}
 			// Write-through: cache entry should be updated with the fresh result.
-			if _, ok := c.cache.Get("uuid-a"); !ok {
+			if _, ok := c.cache.Get("uuid-a_personal"); !ok {
 				t.Error("cache should have entry for uuid-a after write-through on bypass")
 			}
 			// Account should reflect the fresh server data (minUsageBody has 50% utilization),

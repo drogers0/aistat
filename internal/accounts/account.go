@@ -11,15 +11,22 @@ import (
 	"time"
 )
 
+// PersonalOrganizationUUID identifies the defensive nil-organization Claude
+// profile case. It is a storage-key sentinel, not a real organization UUID.
+const PersonalOrganizationUUID = "personal"
+
 // Account is a persisted provider identity. RawBlob is the verbatim credential
 // JSON from the provider's live store; it is written back byte-for-byte by
 // `aistat switch` so unknown fields are never dropped.
 type Account struct {
-	UUID          string          `json:"uuid"`
-	Email         string          `json:"email"`
-	DisplayName   string          `json:"display_name"`
-	RateLimitTier string          `json:"rate_limit_tier"`
-	LastSeenAt    time.Time       `json:"last_seen_at"`
+	UUID             string    `json:"uuid"`
+	Email            string    `json:"email"`
+	DisplayName      string    `json:"display_name"`
+	RateLimitTier    string    `json:"rate_limit_tier"`
+	OrganizationUUID string    `json:"organization_uuid"`
+	OrganizationName string    `json:"organization_name"`
+	OrganizationType string    `json:"organization_type"`
+	LastSeenAt       time.Time `json:"last_seen_at"`
 	// RawBlob is the full credential JSON blob as read from the provider's live
 	// store. `aistat switch` writes this blob back verbatim.
 	RawBlob json.RawMessage `json:"raw_blob"`
@@ -31,7 +38,8 @@ type Account struct {
 // rather than a provider-specific profile struct.
 //
 // Returns an error if raw is empty, not valid JSON, or uuid is empty.
-func NewAccount(raw json.RawMessage, uuid, email, displayName, rateLimitTier string, now time.Time) (Account, error) {
+func NewAccount(raw json.RawMessage, uuid, email, displayName, rateLimitTier,
+	organizationUUID, organizationName, organizationType string, now time.Time) (Account, error) {
 	if len(raw) == 0 {
 		return Account{}, errors.New("accounts: raw credential blob is empty")
 	}
@@ -42,11 +50,23 @@ func NewAccount(raw json.RawMessage, uuid, email, displayName, rateLimitTier str
 		return Account{}, errors.New("accounts: uuid is required")
 	}
 	return Account{
-		UUID:          uuid,
-		Email:         email,
-		DisplayName:   displayName,
-		RateLimitTier: rateLimitTier,
-		LastSeenAt:    now,
-		RawBlob:       raw,
+		UUID:             uuid,
+		Email:            email,
+		DisplayName:      displayName,
+		RateLimitTier:    rateLimitTier,
+		OrganizationUUID: organizationUUID,
+		OrganizationName: organizationName,
+		OrganizationType: organizationType,
+		LastSeenAt:       now,
+		RawBlob:          raw,
 	}, nil
+}
+
+// Key returns the opaque persisted identity for this account. Callers must not
+// parse it: a bare UUID represents Codex or a legacy Claude row.
+func (a Account) Key() string {
+	if a.OrganizationUUID == "" {
+		return a.UUID
+	}
+	return a.UUID + "_" + a.OrganizationUUID
 }

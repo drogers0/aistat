@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -54,6 +55,17 @@ func routingUsageSrv(t *testing.T, routes map[string]struct {
 	return srv
 }
 
+func recordingUsageServer(t *testing.T, requests *[]string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*requests = append(*requests, r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(minUsageBody)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
 // ── assertion helpers ────────────────────────────────────────────────────────
 
 func wantAccounts(t *testing.T, out providers.ProviderOutput, n int) {
@@ -73,6 +85,45 @@ type fetchOpts struct {
 	lookupID func(string) (string, string, error)
 	warn     io.Writer
 	now      func() time.Time
+}
+
+type orderedAccountStore struct {
+	store accounts.Store
+	order []string
+}
+
+func (s *orderedAccountStore) List(ctx context.Context) ([]accounts.Account, error) {
+	stored, err := s.store.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	byKey := make(map[string]accounts.Account, len(stored))
+	for _, account := range stored {
+		byKey[account.Key()] = account
+	}
+	ordered := make([]accounts.Account, 0, len(stored))
+	for _, key := range s.order {
+		if account, ok := byKey[key]; ok {
+			ordered = append(ordered, account)
+			delete(byKey, key)
+		}
+	}
+	for _, account := range byKey {
+		ordered = append(ordered, account)
+	}
+	return ordered, nil
+}
+
+func (s *orderedAccountStore) Upsert(ctx context.Context, account accounts.Account) error {
+	return s.store.Upsert(ctx, account)
+}
+
+func (s *orderedAccountStore) Delete(ctx context.Context, key string) error {
+	return s.store.Delete(ctx, key)
+}
+
+func (s *orderedAccountStore) Promote(ctx context.Context, instruction accounts.Promotion) (accounts.PromotionResult, error) {
+	return s.store.Promote(ctx, instruction)
 }
 
 func runFetch(t *testing.T, o fetchOpts) (providers.ProviderOutput, error) {
@@ -182,8 +233,8 @@ func keys(m map[string]providers.Limit) []string {
 	return out
 }
 
-// storeUUIDs returns sorted UUIDs from the store.
-func storeUUIDs(t *testing.T, s accounts.Store) []string {
+// storeKeys returns sorted opaque keys from the store.
+func storeKeys(t *testing.T, s accounts.Store) []string {
 	t.Helper()
 	accts, err := s.List(context.Background())
 	if err != nil {
@@ -191,7 +242,7 @@ func storeUUIDs(t *testing.T, s accounts.Store) []string {
 	}
 	ids := make([]string, 0, len(accts))
 	for _, a := range accts {
-		ids = append(ids, a.UUID)
+		ids = append(ids, a.Key())
 	}
 	sort.Strings(ids)
 	return ids
@@ -658,10 +709,18 @@ func TestFetch_multi_account(t *testing.T) {
 			out, err := runFetch(t, fetchOpts{store: store, lookupID: noLookupCall(t)})
 			testutil.WantNoErr(t, err)
 			wantAccounts(t, out, 2)
-			// Sorted by email ascending (no active).
-			emails := []string{out.Accounts[0].Email, out.Accounts[1].Email}
-			if emails[0] != "alice@example.com" || emails[1] != "zed@example.com" {
-				t.Errorf("email order = %v, want [alice, zed]", emails)
+			// Sorted by email ascending (no active), with bare Codex keys and no
+			// Claude organization metadata.
+			if got, want := []string{out.Accounts[0].Email, out.Accounts[1].Email}, []string{"alice@example.com", "zed@example.com"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("email order = %v, want %v", got, want)
+			}
+			for _, result := range out.Accounts {
+				if result.Key != result.UUID {
+					t.Errorf("Codex result key = %q, want bare UUID %q", result.Key, result.UUID)
+				}
+				if result.OrganizationName != "" || result.OrganizationType != "" || result.Address != "" {
+					t.Errorf("Codex result organization metadata = (%q, %q, %q), want empty", result.OrganizationName, result.OrganizationType, result.Address)
+				}
 			}
 		}},
 		{"stored refresh rejected one account succeeds", func(t *testing.T) {
@@ -790,6 +849,33 @@ func TestFetch_multi_account(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.run)
+	}
+}
+
+func TestFetch_keySortedRequestOrder(t *testing.T) {
+	tests := []struct {
+		name  string
+		order []string
+	}{
+		{"ascending input", []string{"key-a", "key-b"}},
+		{"descending input", []string{"key-b", "key-a"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			first := makeCodexAccount("key-a", "same@example.com", "tok-first", "ref-first", 0)
+			second := makeCodexAccount("key-b", "same@example.com", "tok-second", "ref-second", 0)
+			store := &orderedAccountStore{store: testutil.MemStore(t, first, second), order: tt.order}
+			var requests []string
+			usageSrv := recordingUsageServer(t, &requests)
+			out, err := runFetch(t, fetchOpts{usage: usageSrv, store: store, lookupID: noLookupCall(t)})
+			testutil.WantNoErr(t, err)
+			if got, want := requests, []string{"Bearer tok-first", "Bearer tok-second"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("request bearer order = %v, want %v", got, want)
+			}
+			if got, want := []string{out.Accounts[0].Key, out.Accounts[1].Key}, []string{"key-a", "key-b"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("result key order = %v, want %v", got, want)
+			}
+		})
 	}
 }
 
@@ -957,7 +1043,7 @@ func TestFetch_token_rotation(t *testing.T) {
 			_, _ = c.Fetch(context.Background())
 
 			// The slot must be in the store even though usage failed.
-			if ids := storeUUIDs(t, c.store); len(ids) == 0 || ids[0] != sub {
+			if ids := storeKeys(t, c.store); len(ids) == 0 || ids[0] != sub {
 				t.Errorf("store UUIDs = %v, want [%s]", ids, sub)
 			}
 		}},
@@ -1105,6 +1191,12 @@ func TestFetchForSwitch(t *testing.T) {
 			}
 			if results[0].UUID != "uuid-b" {
 				t.Errorf("result UUID = %q, want %q", results[0].UUID, "uuid-b")
+			}
+			if results[0].Key != "uuid-b" {
+				t.Errorf("result Key = %q, want %q", results[0].Key, "uuid-b")
+			}
+			if results[0].OrganizationName != "" || results[0].OrganizationType != "" || results[0].Address != "" {
+				t.Errorf("Codex result organization metadata = (%q, %q, %q), want empty", results[0].OrganizationName, results[0].OrganizationType, results[0].Address)
 			}
 			if results[0].Active {
 				t.Error("FetchForSwitch result.Active must be false")
@@ -1272,6 +1364,34 @@ func TestFetchForSwitch(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.run)
+	}
+}
+
+func TestFetchForSwitch_keySortedRequestOrder(t *testing.T) {
+	tests := []struct {
+		name  string
+		order []string
+	}{
+		{"ascending input", []string{"key-a", "key-b"}},
+		{"descending input", []string{"key-b", "key-a"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			first := makeCodexAccount("key-a", "same@example.com", "tok-first", "ref-first", 0)
+			second := makeCodexAccount("key-b", "same@example.com", "tok-second", "ref-second", 0)
+			store := &orderedAccountStore{store: testutil.MemStore(t, first, second), order: tt.order}
+			var requests []string
+			usageSrv := recordingUsageServer(t, &requests)
+			client := buildClient(t, usageSrv, testutil.RejectServer(t, "refresh"), makeCodexCred("tok-live", "ref-live", 0), store, nil, nil, nil)
+			out, err := client.FetchForSwitch(context.Background())
+			testutil.WantNoErr(t, err)
+			if got, want := requests, []string{"Bearer tok-first", "Bearer tok-second"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("request bearer order = %v, want %v", got, want)
+			}
+			if got, want := []string{out[0].Key, out[1].Key}, []string{"key-a", "key-b"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("result key order = %v, want %v", got, want)
+			}
+		})
 	}
 }
 

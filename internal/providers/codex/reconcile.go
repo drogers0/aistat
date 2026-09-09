@@ -9,13 +9,13 @@ import (
 	"github.com/drogers0/aistat/v2/internal/cred"
 )
 
-// ReconcileInput is the full input set for Reconcile and ResolveActiveUUID.
+// ReconcileInput is the full input set for Reconcile and ResolveActiveKey.
 //
 // LookupID is called with the live id_token when no byte-match is found and
 // the id_token is non-empty. It must not be nil when LiveBlob is non-nil.
 // Identity resolution is pure (D1: JWT decode, no network).
 type ReconcileInput struct {
-	LiveBlob *cred.Credential                         // nil if absent; Raw holds exact live bytes
+	LiveBlob *cred.Credential // nil if absent; Raw holds exact live bytes
 	Stored   []accounts.Account
 	LookupID func(idToken string) (sub, email string, err error)
 	Now      time.Time
@@ -24,7 +24,7 @@ type ReconcileInput struct {
 // ReconcileOutput is the result of a Reconcile call.
 type ReconcileOutput struct {
 	Accounts     []accounts.Account
-	ActiveUUID   string           // "" if none
+	ActiveKey    string           // "" if none
 	CaptureWarn  string           // non-empty when fallback applied (D3)
 	Inserted     bool             // true if a new account slot was created
 	Upserted     bool             // true if an existing slot was updated
@@ -56,7 +56,7 @@ func Reconcile(in ReconcileInput) ReconcileOutput {
 		slot.RawBlob = json.RawMessage(in.LiveBlob.Raw)
 		slot.LastSeenAt = in.Now
 		out.Accounts[matchIdx] = slot
-		out.ActiveUUID = slot.UUID
+		out.ActiveKey = slot.Key()
 		out.Upserted = true
 
 	case lookupErr != nil:
@@ -77,7 +77,7 @@ func Reconcile(in ReconcileInput) ReconcileOutput {
 				slot.RawBlob = json.RawMessage(in.LiveBlob.Raw)
 				slot.LastSeenAt = in.Now
 				out.Accounts[i] = slot
-				out.ActiveUUID = sub
+				out.ActiveKey = slot.Key()
 				out.Upserted = true
 				return out
 			}
@@ -89,20 +89,20 @@ func Reconcile(in ReconcileInput) ReconcileOutput {
 			LastSeenAt: in.Now,
 			RawBlob:    json.RawMessage(in.LiveBlob.Raw),
 		})
-		out.ActiveUUID = sub
+		out.ActiveKey = out.Accounts[len(out.Accounts)-1].Key()
 		out.Inserted = true
 	}
 
 	return out
 }
 
-// ResolveActiveUUID is the read-only variant used by FetchForSwitch to identify
-// the active account UUID without any store mutations. All LookupID failures
+// ResolveActiveKey is the read-only variant used by FetchForSwitch to identify
+// the active account key without any store mutations. All LookupID failures
 // (parse errors, missing id_token) return ("", nil) — not an error — because
 // D1 guarantees there are no transient network failures on the identity path
 // (pure JWT decode). T4's switch.go must not depend on surfaced errors from
-// Codex ResolveActiveUUID.
-func ResolveActiveUUID(in ReconcileInput) (string, error) {
+// Codex ResolveActiveKey.
+func ResolveActiveKey(in ReconcileInput) (string, error) {
 	if in.LiveBlob == nil {
 		return "", nil
 	}
@@ -110,7 +110,7 @@ func ResolveActiveUUID(in ReconcileInput) (string, error) {
 	matchIdx, sub, _, lookupErr := findActive(in)
 
 	if matchIdx >= 0 {
-		return in.Stored[matchIdx].UUID, nil
+		return in.Stored[matchIdx].Key(), nil
 	}
 
 	if lookupErr != nil {
@@ -118,7 +118,19 @@ func ResolveActiveUUID(in ReconcileInput) (string, error) {
 		return "", nil
 	}
 
-	return sub, nil
+	if accountIndex(in.Stored, sub) >= 0 {
+		return sub, nil
+	}
+	return "", nil
+}
+
+func accountIndex(stored []accounts.Account, key string) int {
+	for i, account := range stored {
+		if account.Key() == key {
+			return i
+		}
+	}
+	return -1
 }
 
 // findActive resolves the active account from the live blob without mutating
