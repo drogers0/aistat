@@ -12,6 +12,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # Apple's linker supplies LC_UUID for Go 1.22 tests and Go 1.23 tools.
+      GOFLAGS: ${{ matrix.os == 'macos-latest' && '-ldflags=-linkmode=external' || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -20,16 +23,24 @@ jobs:
           cache: true
       - name: go vet
         run: go vet ./...
-      - name: staticcheck
-        uses: dominikh/staticcheck-action@v1
-        with:
-          version: "2025.1.1"
-      - name: staticcheck (fake build)
-        uses: dominikh/staticcheck-action@v1
-        with:
-          version: "2025.1.1"
-          build-tags: "fake"
       - name: go test
         run: |
           go test -race ./...
           go test -race -tags=fake ./...
+      # Staticcheck 2025.1.1 requires Go 1.23; keep tests on the module minimum above.
+      - name: Set up Go for staticcheck
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.12'
+          cache: false
+      - name: staticcheck
+        uses: dominikh/staticcheck-action@v1
+        with:
+          version: "2025.1.1"
+          install-go: false
+      - name: staticcheck (fake build)
+        uses: dominikh/staticcheck-action@v1
+        with:
+          version: "2025.1.1"
+          install-go: false
+          build-tags: "fake"
