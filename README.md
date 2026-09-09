@@ -125,7 +125,7 @@ Whichever account is active when you call `aistat` gets stored automatically. Af
 
 `aistat accounts list` shows every stored account and prints the canonical Claude address for canonical rows. Legacy Claude and Codex rows fall back to their existing email/UUID display. `aistat accounts remove <address|slug|email|uuid-prefix>` deletes one (the currently active account is protected; switch away with `aistat switch --to <address>` or run logout first).
 
-`aistat switch` is the only command that mutates a live credential. `aistat usage` never writes one, but it does persist to the account store — capturing or refreshing the active account, saving rotated refresh tokens, and promoting a newly profiled context — plus its usage-cache writes and the narrow Darwin index-compaction recovery described in [How it works](#how-it-works).
+`aistat switch` is the only command that changes which account is live; `aistat usage` never writes a live credential, though it does update the stored accounts and the usage cache.
 
 ### aistat switch
 

@@ -364,12 +364,10 @@ func (s *darwinStore) Promote(ctx context.Context, instruction Promotion) (Promo
 		if err != nil {
 			return err
 		}
-		// The index, not the item, defines a stored account: List walks the index,
-		// so an unindexed item is unreachable. An item written by a promotion that
-		// was interrupted before its index write is therefore debris, not data, and
-		// is treated as absent. Without this the source's blob rotates away from the
-		// frozen copy on the next refresh and the CAS can never match again, leaving
-		// the account permanently unpromotable.
+		// List walks the index, so an unindexed item is debris from a promotion
+		// interrupted before its index write, not a stored account. Counting it as
+		// present wedges the account: the source blob rotates away from that frozen
+		// copy and the CAS can never match again.
 		indexed := slices.Contains(keys, destinationKey)
 		var existingDestination Account
 		present := !destinationAbsent && indexed
