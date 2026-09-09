@@ -36,8 +36,7 @@ for one. JSON is the default and is what you should parse.
   **Copilot** renders — a single flat map, no `accounts`).
 
 Claude can hold several contexts under one email, so `email` is not a unique
-selector. Pass the row's printed `address` to `--to`. Run `aistat usage` after
-a `claude /login` to capture a newly active context.
+selector. Pass the row's printed `address` to `--to`.
 
 Each window carries:
 

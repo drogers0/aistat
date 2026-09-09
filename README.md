@@ -115,15 +115,15 @@ aistat accounts list [provider]        # list stored accounts (all providers, or
 aistat accounts remove <id> [provider] # remove by address, unique organization slug, email, or UUID prefix
 ```
 
-Switch and accounts work across Claude and Codex; Copilot is single-account (usage-only). `--to` can omit the provider when the id matches exactly one provider's store. Claude accepts a printed full address, a unique organization slug, an email substring, or a UUID prefix. `accounts remove` accepts the same forms. A full printed address is the canonical copy/paste selector for scripts and cron (`aistat switch <provider> --to <address>`, `aistat accounts remove <address>`); the shorter forms are unique-only aliases. `--watch` auto-picks and takes no `--to` — the two cannot be combined.
+Switch and accounts work across Claude and Codex; Copilot is single-account (usage-only). `--to` can omit the provider when the id matches exactly one provider's store. A full printed address is the canonical selector when several Claude contexts share an email.
 
 Flags: `-h`/`--human` for text rendering (affects `usage` and `accounts list`), `--refresh` to bypass the per-account usage cache (~90 s TTL, affects `usage` only), `--debug` for per-request diagnostics on stderr, `--version` and `--help` for the obvious.
 
 ## Multiple accounts
 
-Whichever account is active when you call `aistat` gets stored automatically. After each `claude /login`, run `aistat usage` to capture that live Claude context alongside the others. After `codex login`, the next `aistat usage` captures the Codex account. No separate enrollment command is needed.
+Whichever account is active when you call `aistat` gets stored automatically. After a `claude /login` or `codex login`, the next `aistat usage` adds it alongside the others — no extra setup, no separate command.
 
-`aistat accounts list` shows every stored account and prints the canonical Claude address for canonical rows. Legacy Claude and Codex rows fall back to their existing email/UUID display. `aistat accounts remove <address|slug|email|uuid-prefix>` deletes one (the currently active account is protected; switch away with `aistat switch --to <address>` or run logout first).
+`aistat accounts list` shows every stored account, `aistat accounts remove <id>` deletes one (the currently-active account is protected — switch away with `aistat switch --to <address>` or run logout first).
 
 `aistat switch` is the only command that changes which account is live; `aistat usage` never writes a live credential, though it does update the stored accounts and the usage cache.
 
@@ -132,9 +132,10 @@ Whichever account is active when you call `aistat` gets stored automatically. Af
 `aistat switch` rotates the live credential to a different stored account — no browser round-trip:
 
 - **Auto-pick** (`aistat switch`): picks the stored account with the most 5-hour headroom.
-- **Explicit** (`aistat switch <provider> --to <address|slug|email|uuid-prefix>`): match a canonical Claude address, a unique organization slug, an email substring, or a UUID prefix. The full printed address is the reliable selector when several Claude contexts share an email.
+- **Explicit** (`aistat switch --to <address|slug|email|uuid-prefix>`): match a canonical Claude address, a unique organization slug, an email substring, or a UUID prefix.
 
 Auto-pick buckets candidates by 5% (so 87% and 89% are equivalent) and breaks ties by most-recent use. It optimizes **relative headroom**, not "has enough quota for the workload you're about to start" — for nuanced cases, pass `--to` explicitly.
+
 
 > [!NOTE]
 > Multi-account support covers Claude and Codex — Copilot rides on whatever single-account credential its upstream CLI writes.
@@ -251,7 +252,7 @@ systemctl --user enable --now aistat-autoswitch.service
 | Codex    | `chatgpt.com/backend-api/wham/usage` |
 | Copilot  | `api.github.com/copilot_internal/user` |
 
-**Caching.** Each Claude and Codex account's usage response is cached for 90 seconds so back-to-back invocations don't hammer the upstream rate limits. Cache entries use the opaque stored account key, so two Claude contexts with one account UUID and different organization UUIDs do not share usage. `aistat usage --refresh` bypasses the cache; `aistat switch` reads through it, so refresh first if you want a switch decision based on the freshest numbers. Override the TTL with `AISTAT_USAGE_CACHE_TTL=10s` (or any duration). If the cache can't be written, the run proceeds without it.
+**Caching.** Each Claude and Codex account's usage response is cached for 90 seconds so back-to-back invocations don't hammer the upstream rate limits. `aistat usage --refresh` bypasses the cache; `aistat switch` reads through it, so refresh first if you need a fresh read before switching.
 
 **User-Agent.** The Claude provider sends `User-Agent: claude-code/<version>` on the wire — Anthropic's `/oauth/usage` endpoint aggressively throttles non-`claude-code/` clients ([anthropics/claude-code#31637](https://github.com/anthropics/claude-code/issues/31637)). Override with `AISTAT_CLAUDE_USER_AGENT=<string>` (verbatim, e.g. `aistat/2.1.0`) to opt back into the honest UA. Sibling vars exist for the other providers (`AISTAT_CODEX_USER_AGENT`, `AISTAT_COPILOT_USER_AGENT`); those default to `aistat/<version>` since their endpoints don't currently appear to partition by UA.
 
@@ -308,7 +309,7 @@ The exit code and stdout payload are unaffected — these are heads-ups that the
 }
 ```
 
-Claude and Codex both use the `accounts` view: an array of per-account rows (even with a single stored account), where the row with `active: true` carries the live account's limits. Claude canonical rows may also carry `address`, `organization_name`, and `organization_type`; these fields are additive and omitted for Codex and live-unstored rows. Copilot stays single-account: it emits a top-level `limits` and no `accounts`. Every `Limit` has the same four fields: `used_percent`, `remaining_percent`, `resets_at` (ISO 8601), `reset_after_seconds`. `aistat accounts list` prints the canonical Claude address and the UUID display field. Use the printed address to select a same-email context, or use a unique organization slug, email substring, or UUID prefix with `switch --to` and `accounts remove`.
+Claude and Codex both use the `accounts` view — an array of per-account rows (even with a single stored account), where the row with `active: true` carries the live account's limits. Claude canonical rows may also carry `address`, `organization_name`, and `organization_type`; these fields are additive and omitted for Codex and live-unstored rows. Copilot stays single-account: it emits a top-level `limits` and no `accounts`. Every `Limit` has the same four fields: `used_percent`, `remaining_percent`, `resets_at` (ISO 8601), `reset_after_seconds`. `aistat accounts list` prints the canonical Claude address and the UUID display field. Use the printed address to select a same-email context, or use a unique organization slug, email substring, or UUID prefix with `switch --to` and `accounts remove`.
 
 </details>
 
