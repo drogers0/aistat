@@ -8,4 +8,4 @@ linters:
       - path: _test\.go # test helpers intentionally ignore write/upsert errors
         linters: [errcheck]
       - linters: [staticcheck]
-        text: "QF1001" # De Morgan quickfix; not enforced by the pinned standalone staticcheck 2025.1.1
+        text: "QF1001" # De Morgan quickfix; not enforced by the pinned standalone staticcheck 2026.2.1

@@ -92,7 +92,7 @@ curl -fsSL https://raw.githubusercontent.com/drogers0/aistat/main/install.sh | s
 curl -fsSL https://raw.githubusercontent.com/drogers0/aistat/main/install.sh | sh -s -- --no-modify-path
 ```
 
-**`go install` (requires Go 1.22+):**
+**`go install` (requires Go 1.26+):**
 
 ```bash
 go install github.com/drogers0/aistat/v2/cmd/aistat@latest
