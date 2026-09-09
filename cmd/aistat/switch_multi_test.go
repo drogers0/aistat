@@ -73,14 +73,14 @@ func withCodexWriteBlob(t *testing.T) (written *[]byte, writeErr *error) {
 	return &blob, &werr
 }
 
-// withCodexActiveUUID stubs switchLookupCodexActiveUUID to return a fixed UUID.
-func withCodexActiveUUID(t *testing.T, uuid string) {
+// withCodexActiveKey stubs switchLookupCodexActiveKey to return a fixed key.
+func withCodexActiveKey(t *testing.T, key string) {
 	t.Helper()
-	old := switchLookupCodexActiveUUID
-	switchLookupCodexActiveUUID = func(_ context.Context, _ []accounts.Account, _ io.Writer) (string, error) {
-		return uuid, nil
+	old := switchLookupCodexActiveKey
+	switchLookupCodexActiveKey = func(_ context.Context, _ []accounts.Account, _ io.Writer) (string, error) {
+		return key, nil
 	}
-	t.Cleanup(func() { switchLookupCodexActiveUUID = old })
+	t.Cleanup(func() { switchLookupCodexActiveKey = old })
 }
 
 // withCodexFetchLiveUsageFn stubs the codex fetch seam (distinct from claude's
@@ -98,7 +98,7 @@ func withCodexFetchLiveUsageFn(t *testing.T, fn func(token string) (map[string]p
 func seedCodexAccount(t *testing.T, ms *accounts.MemoryStore, uuid, email, plan string, lastSeen time.Time) {
 	t.Helper()
 	rawBlob := []byte(`{"tokens":{"access_token":"ctok-` + uuid + `","refresh_token":"crt-` + uuid + `"}}`)
-	a, err := accounts.NewAccount(rawBlob, uuid, email, email, plan, lastSeen)
+	a, err := accounts.NewAccount(rawBlob, uuid, email, email, plan, "", "", "", lastSeen)
 	testutil.WantNoErr(t, err)
 	if err := ms.Upsert(context.Background(), a); err != nil {
 		t.Fatalf("seedCodexAccount Upsert: %v", err)
@@ -125,11 +125,11 @@ func TestSwitchBulk(t *testing.T) {
 			claudeMS := withMemoryStore(t)
 			seedAccount(t, claudeMS, "uuid-cwork", "cwork@example.com", "plan", now.Add(-2*time.Hour))
 			seedAccount(t, claudeMS, "uuid-cpersonal", "cpersonal@example.com", "plan", now.Add(-1*time.Hour))
-			withSwitchActiveUUID(t, "uuid-cwork")
+			withSwitchActiveKey(t, "uuid-cwork")
 
 			claudeStub := &stubSwitchClient{
 				fetchResults: []providers.AccountResult{
-					{Email: "cpersonal@example.com", UUID: "uuid-cpersonal", Limits: makeLimits(80)},
+					{Email: "cpersonal@example.com", UUID: "uuid-cpersonal", Key: "uuid-cpersonal", Limits: makeLimits(80)},
 				},
 			}
 			withSwitchClient(t, claudeStub)
@@ -141,11 +141,11 @@ func TestSwitchBulk(t *testing.T) {
 			codexMS := withCodexMemoryStore(t)
 			seedCodexAccount(t, codexMS, "uuid-dwork", "dwork@chatgpt.com", "plan", now.Add(-2*time.Hour))
 			seedCodexAccount(t, codexMS, "uuid-dpersonal", "dpersonal@chatgpt.com", "plan", now.Add(-1*time.Hour))
-			withCodexActiveUUID(t, "uuid-dwork")
+			withCodexActiveKey(t, "uuid-dwork")
 
 			codexStub := &stubCodexSwitchClient{
 				fetchResults: []providers.AccountResult{
-					{Email: "dpersonal@chatgpt.com", UUID: "uuid-dpersonal", Limits: makeLimits(80)},
+					{Email: "dpersonal@chatgpt.com", UUID: "uuid-dpersonal", Key: "uuid-dpersonal", Limits: makeLimits(80)},
 				},
 			}
 			withCodexSwitchClient(t, codexStub)
@@ -168,11 +168,11 @@ func TestSwitchBulk(t *testing.T) {
 			claudeMS := withMemoryStore(t)
 			seedAccount(t, claudeMS, "uuid-cw", "cw@example.com", "plan", now.Add(-2*time.Hour))
 			seedAccount(t, claudeMS, "uuid-cp", "cp@example.com", "plan", now.Add(-1*time.Hour))
-			withSwitchActiveUUID(t, "uuid-cw")
+			withSwitchActiveKey(t, "uuid-cw")
 
 			claudeStub := &stubSwitchClient{
 				fetchResults: []providers.AccountResult{
-					{Email: "cp@example.com", UUID: "uuid-cp", Limits: makeLimits(80)},
+					{Email: "cp@example.com", UUID: "uuid-cp", Key: "uuid-cp", Limits: makeLimits(80)},
 				},
 			}
 			withSwitchClient(t, claudeStub)
@@ -210,11 +210,11 @@ func TestSwitchBulk(t *testing.T) {
 			codexMS := withCodexMemoryStore(t)
 			seedCodexAccount(t, codexMS, "uuid-dwork", "dwork@chatgpt.com", "plan", now.Add(-2*time.Hour))
 			seedCodexAccount(t, codexMS, "uuid-dpersonal", "dpersonal@chatgpt.com", "plan", now.Add(-1*time.Hour))
-			withCodexActiveUUID(t, "uuid-dwork")
+			withCodexActiveKey(t, "uuid-dwork")
 
 			codexStub := &stubCodexSwitchClient{
 				fetchResults: []providers.AccountResult{
-					{Email: "dpersonal@chatgpt.com", UUID: "uuid-dpersonal", Limits: makeLimits(80)},
+					{Email: "dpersonal@chatgpt.com", UUID: "uuid-dpersonal", Key: "uuid-dpersonal", Limits: makeLimits(80)},
 				},
 			}
 			withCodexSwitchClient(t, codexStub)
@@ -255,11 +255,11 @@ func TestSwitchBulk(t *testing.T) {
 			codexMS := withCodexMemoryStore(t)
 			seedCodexAccount(t, codexMS, "uuid-dw", "dw@chatgpt.com", "plan", now.Add(-2*time.Hour))
 			seedCodexAccount(t, codexMS, "uuid-dp", "dp@chatgpt.com", "plan", now.Add(-1*time.Hour))
-			withCodexActiveUUID(t, "uuid-dw")
+			withCodexActiveKey(t, "uuid-dw")
 
 			codexStub := &stubCodexSwitchClient{
 				fetchResults: []providers.AccountResult{
-					{Email: "dp@chatgpt.com", UUID: "uuid-dp", Limits: makeLimits(80)},
+					{Email: "dp@chatgpt.com", UUID: "uuid-dp", Key: "uuid-dp", Limits: makeLimits(80)},
 				},
 			}
 			withCodexSwitchClient(t, codexStub)
@@ -281,10 +281,10 @@ func TestSwitchBulk(t *testing.T) {
 			claudeMS := withMemoryStore(t)
 			seedAccount(t, claudeMS, "uuid-cf1", "cf1@example.com", "plan", now.Add(-2*time.Hour))
 			seedAccount(t, claudeMS, "uuid-cf2", "cf2@example.com", "plan", now.Add(-1*time.Hour))
-			withSwitchActiveUUID(t, "uuid-cf1")
+			withSwitchActiveKey(t, "uuid-cf1")
 			withSwitchClient(t, &stubSwitchClient{
 				fetchResults: []providers.AccountResult{
-					{Email: "cf2@example.com", UUID: "uuid-cf2", Limits: makeLimits(80)},
+					{Email: "cf2@example.com", UUID: "uuid-cf2", Key: "uuid-cf2", Limits: makeLimits(80)},
 				},
 			})
 			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
@@ -296,10 +296,10 @@ func TestSwitchBulk(t *testing.T) {
 			codexMS := withCodexMemoryStore(t)
 			seedCodexAccount(t, codexMS, "uuid-ds1", "ds1@chatgpt.com", "plan", now.Add(-2*time.Hour))
 			seedCodexAccount(t, codexMS, "uuid-ds2", "ds2@chatgpt.com", "plan", now.Add(-1*time.Hour))
-			withCodexActiveUUID(t, "uuid-ds1")
+			withCodexActiveKey(t, "uuid-ds1")
 			withCodexSwitchClient(t, &stubCodexSwitchClient{
 				fetchResults: []providers.AccountResult{
-					{Email: "ds2@chatgpt.com", UUID: "uuid-ds2", Limits: makeLimits(80)},
+					{Email: "ds2@chatgpt.com", UUID: "uuid-ds2", Key: "uuid-ds2", Limits: makeLimits(80)},
 				},
 			})
 			codexWritten, _ := withCodexWriteBlob(t)
@@ -333,11 +333,11 @@ func TestSwitchProviderArg(t *testing.T) {
 			claudeMS := withMemoryStore(t)
 			seedAccount(t, claudeMS, "uuid-cw2", "cw2@example.com", "plan", now.Add(-2*time.Hour))
 			seedAccount(t, claudeMS, "uuid-cp2", "cp2@example.com", "plan", now.Add(-1*time.Hour))
-			withSwitchActiveUUID(t, "uuid-cw2")
+			withSwitchActiveKey(t, "uuid-cw2")
 
 			claudeStub := &stubSwitchClient{
 				fetchResults: []providers.AccountResult{
-					{Email: "cp2@example.com", UUID: "uuid-cp2", Limits: makeLimits(80)},
+					{Email: "cp2@example.com", UUID: "uuid-cp2", Key: "uuid-cp2", Limits: makeLimits(80)},
 				},
 			}
 			withSwitchClient(t, claudeStub)
@@ -367,11 +367,11 @@ func TestSwitchProviderArg(t *testing.T) {
 			codexMS := withCodexMemoryStore(t)
 			seedCodexAccount(t, codexMS, "uuid-d1", "d1@chatgpt.com", "plan", now.Add(-2*time.Hour))
 			seedCodexAccount(t, codexMS, "uuid-d2", "d2@chatgpt.com", "plan", now.Add(-1*time.Hour))
-			withCodexActiveUUID(t, "uuid-d1")
+			withCodexActiveKey(t, "uuid-d1")
 
 			codexStub := &stubCodexSwitchClient{
 				fetchResults: []providers.AccountResult{
-					{Email: "d2@chatgpt.com", UUID: "uuid-d2", Limits: makeLimits(80)},
+					{Email: "d2@chatgpt.com", UUID: "uuid-d2", Key: "uuid-d2", Limits: makeLimits(80)},
 				},
 			}
 			withCodexSwitchClient(t, codexStub)
@@ -397,7 +397,7 @@ func TestSwitchProviderArg(t *testing.T) {
 		{"claude one account login hint", func(t *testing.T) {
 			ms := withMemoryStore(t)
 			seedAccount(t, ms, "uuid-only", "only@example.com", "plan", time.Now())
-			withSwitchActiveUUID(t, "uuid-only")
+			withSwitchActiveKey(t, "uuid-only")
 			withCodexMemoryStore(t)
 
 			r := runSwitchMultiTest("claude")
@@ -429,7 +429,7 @@ func TestSwitchToInfer(t *testing.T) {
 			ms := withMemoryStore(t)
 			seedAccount(t, ms, "uuid-cu", "unique@claude.com", "plan", time.Now())
 			seedAccount(t, ms, "uuid-cu2", "other@claude.com", "plan", time.Now())
-			withSwitchActiveUUID(t, "uuid-cu2")
+			withSwitchActiveKey(t, "uuid-cu2")
 			withSwitchClient(t, &stubSwitchClient{})
 			claudeWritten, _ := withWriteBlob(t)
 
@@ -449,7 +449,7 @@ func TestSwitchToInfer(t *testing.T) {
 			codexMS := withCodexMemoryStore(t)
 			seedCodexAccount(t, codexMS, "uuid-du", "user@codex.com", "plan", time.Now())
 			seedCodexAccount(t, codexMS, "uuid-da", "active@codex.com", "plan", time.Now())
-			withCodexActiveUUID(t, "uuid-da")
+			withCodexActiveKey(t, "uuid-da")
 			withCodexSwitchClient(t, &stubCodexSwitchClient{})
 			codexWritten, _ := withCodexWriteBlob(t)
 
@@ -482,7 +482,9 @@ func TestSwitchToInfer(t *testing.T) {
 
 			r := runSwitchMultiTest("--to", "shared")
 			wantExit(t, r, 2)
-			wantErrOut(t, r, "multiple stored accounts match")
+			if got, want := r.stderr, "multiple stored accounts match \"shared\"; use one of: shared@personal.com (uuid uuid-cb), shared@work.com (uuid uuid-ca)\n"; got != want {
+				t.Fatalf("ambiguity = %q, want %q", got, want)
+			}
 			if strings.Contains(r.stderr, "multiple providers match") {
 				t.Errorf("should NOT show cross-provider ambiguity message; stderr: %q", r.stderr)
 			}
@@ -494,7 +496,7 @@ func TestSwitchToInfer(t *testing.T) {
 			codexMS := withCodexMemoryStore(t)
 			seedCodexAccount(t, codexMS, "uuid-dtarget", "target@codex.com", "plan", time.Now())
 			seedCodexAccount(t, codexMS, "uuid-dactive", "active@codex.com", "plan", time.Now())
-			withCodexActiveUUID(t, "uuid-dactive")
+			withCodexActiveKey(t, "uuid-dactive")
 			withCodexSwitchClient(t, &stubCodexSwitchClient{})
 			codexWritten, _ := withCodexWriteBlob(t)
 

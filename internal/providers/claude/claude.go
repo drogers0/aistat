@@ -8,10 +8,12 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/drogers0/aistat/v2/internal/accounts"
+	"github.com/drogers0/aistat/v2/internal/address"
 	"github.com/drogers0/aistat/v2/internal/cred"
 	"github.com/drogers0/aistat/v2/internal/httpx"
 	"github.com/drogers0/aistat/v2/internal/providers"
@@ -55,7 +57,7 @@ type Client struct {
 	baseTimeout      time.Duration
 	perAccountBudget time.Duration
 	cache            *usagecache.Cache // always non-nil; disabled state degrades to no-op
-	cacheBypass      bool        // skips the cache read path; writes still propagate (D8)
+	cacheBypass      bool              // skips the cache read path; writes still propagate (D8)
 }
 
 // Option mutates a Client at construction time.
@@ -114,7 +116,7 @@ func New(debug io.Writer, userAgent string, opts ...Option) *Client {
 func (c *Client) ID() string { return "claude" }
 
 // GetProfile fetches the OAuth profile for the given access token.
-// Used by cmd/aistat/accounts.go (D11 active-UUID resolution) to get a profile
+// Used by cmd/aistat/accounts.go (D11 active-key resolution) to get a profile
 // lookup callable without constructing a full Fetch call.
 func (c *Client) GetProfile(ctx context.Context, token string) (Profile, error) {
 	return c.profile.Get(ctx, token)
@@ -202,7 +204,7 @@ func (c *Client) readLiveCredential(ctx context.Context) (*cred.Credential, erro
 	return &cr, nil
 }
 
-// FetchUsage calls the usage endpoint for a known account UUID and returns the
+// FetchUsage calls the usage endpoint for a known account key and returns the
 // parsed limits. Goes through the same cached path as the reporting flow
 // (fetchLimitsCached): cache hit if a recent entry exists; otherwise fetches
 // fresh and writes through. Exposed so cmd/aistat/switch can read the
@@ -210,11 +212,11 @@ func (c *Client) readLiveCredential(ctx context.Context) (*cred.Credential, erro
 // without re-implementing the window parser; FetchForSwitch returns only the
 // non-active rows.
 //
-// Passing an empty uuid (e.g. for an unstored live credential) skips cache
+// Passing an empty key (e.g. for an unstored live credential) skips cache
 // entirely and falls through to a fresh fetch — the cache has no key to
 // associate the result with.
-func (c *Client) FetchUsage(ctx context.Context, accessToken, uuid string) (map[string]providers.Limit, error) {
-	return c.fetchLimitsCached(ctx, accessToken, uuid)
+func (c *Client) FetchUsage(ctx context.Context, accessToken, key string) (map[string]providers.Limit, error) {
+	return c.fetchLimitsCached(ctx, accessToken, key)
 }
 
 // fetchLimitsFresh calls the usage endpoint with accessToken and returns the
@@ -329,22 +331,22 @@ func (c *Client) fetchLimitsFresh(ctx context.Context, accessToken string) (map[
 // fetchLimitsCached checks the usage cache first, falling through to
 // fetchLimitsFresh on miss. On a successful fresh fetch, writes through to
 // the cache even when cacheBypass is set (D8 write-through contract).
-// If uuid is empty (live-unstored fallback path), skips all cache interaction
+// If key is empty (live-unstored fallback path), skips all cache interaction
 // and calls fetchLimitsFresh directly.
-func (c *Client) fetchLimitsCached(ctx context.Context, accessToken, uuid string) (map[string]providers.Limit, error) {
-	if uuid == "" {
+func (c *Client) fetchLimitsCached(ctx context.Context, accessToken, key string) (map[string]providers.Limit, error) {
+	if key == "" {
 		return c.fetchLimitsFresh(ctx, accessToken)
 	}
 	if !c.cacheBypass {
-		if cached, age, ok := c.cache.GetWithAge(uuid); ok {
+		if cached, age, ok := c.cache.GetWithAge(key); ok {
 			cached = multiaccount.RecomputeResetAfter(cached, c.now())
-			c.logCacheHit(uuid, age)
+			c.logCacheHit(key, age)
 			return cached, nil
 		}
 	}
 	limits, err := c.fetchLimitsFresh(ctx, accessToken)
 	if err == nil {
-		c.cache.Put(uuid, limits)
+		c.cache.Put(key, limits)
 	}
 	return limits, err
 }
@@ -357,8 +359,8 @@ func (c *Client) debugf(format string, args ...any) {
 }
 
 // logCacheHit emits one [debug] line on a usage cache hit.
-func (c *Client) logCacheHit(uuid string, age time.Duration) {
-	c.debugf("usage cache hit for %s (age %ds)", uuid, int(age.Seconds()))
+func (c *Client) logCacheHit(key string, age time.Duration) {
+	c.debugf("usage cache hit for %s (age %ds)", key, int(age.Seconds()))
 }
 
 // rotateRawBlob returns a copy of rawBlob with claudeAiOauth.accessToken,
@@ -428,14 +430,33 @@ func (c *Client) doReconcile(ctx context.Context) (*cred.Credential, ReconcileOu
 		Now: c.now(),
 	})
 
-	// Step 5: persist before the usage fetches for crash robustness.
-	// Invariant: Reconcile sets Inserted/Upserted only for the active slot,
-	// so the UUID filter below always writes exactly the account that changed.
-	// Persistence stays best-effort (a write failure does not fail Fetch), but
-	// we warn so a deterministic store-write failure does not silently recur.
+	if out.Promotion != nil {
+		result, promoteErr := c.store.Promote(ctx, *out.Promotion)
+		c.warnPromotion(*out.Promotion, result, promoteErr)
+		refreshed, verifyErr := c.store.List(ctx)
+		if verifyErr == nil {
+			out.Accounts = refreshed
+			out.ActiveKey, _ = ResolveActiveKey(ReconcileInput{
+				LiveBlob: live,
+				Stored:   refreshed,
+				LookupProfile: func(token string) (Profile, error) {
+					return c.profile.Get(ctx, token)
+				},
+				Now: c.now(),
+			})
+		} else if promoteErr == nil && result == accounts.PromotionCompleted {
+			out.Accounts = synthesizePromotion(out.Accounts, *out.Promotion)
+			out.ActiveKey = out.Promotion.Destination.Key()
+		} else {
+			out = ReconcileOutput{LiveUnstored: live}
+		}
+	}
+
+	// Persist before the usage fetches for crash robustness. Promotion owns its
+	// own atomic write; ordinary reconciliation still writes just the active key.
 	if out.Inserted || out.Upserted {
 		for _, acct := range out.Accounts {
-			if acct.UUID == out.ActiveUUID {
+			if acct.Key() == out.ActiveKey {
 				if err := c.store.Upsert(ctx, acct); err != nil {
 					c.warnf("aistat: claude: could not persist account %s (uuid %s): %s\n", acct.Email, acct.UUID, err)
 				}
@@ -445,6 +466,27 @@ func (c *Client) doReconcile(ctx context.Context) (*cred.Credential, ReconcileOu
 	}
 
 	return live, out, nil
+}
+
+func (c *Client) warnPromotion(instruction accounts.Promotion, result accounts.PromotionResult, promoteErr error) {
+	switch {
+	case promoteErr != nil:
+		c.warnf("aistat: claude: could not promote legacy account %s to %s: %s; store may require recovery\n", instruction.SourceKey, instruction.Destination.Key(), promoteErr)
+	case result == accounts.PromotionSourceChanged:
+		c.warnf("aistat: claude: could not promote legacy account %s to %s: source changed; leaving existing slots untouched\n", instruction.SourceKey, instruction.Destination.Key())
+	case result == accounts.PromotionDestinationChanged:
+		c.warnf("aistat: claude: could not promote legacy account %s to %s: destination changed; leaving existing slots untouched\n", instruction.SourceKey, instruction.Destination.Key())
+	}
+}
+
+func synthesizePromotion(stored []accounts.Account, instruction accounts.Promotion) []accounts.Account {
+	accountsAfter := make([]accounts.Account, 0, len(stored))
+	for _, account := range stored {
+		if account.Key() != instruction.SourceKey && account.Key() != instruction.Destination.Key() {
+			accountsAfter = append(accountsAfter, account)
+		}
+	}
+	return append(accountsAfter, instruction.Destination)
 }
 
 // ReconcileAndPersist is the exported write-capable reconcile entry point
@@ -525,14 +567,10 @@ func (c *Client) Fetch(ctx context.Context) (providers.ProviderOutput, error) {
 		accountResults = append(accountResults, ar)
 	}
 
+	sortAccountsByKey(reconcileOut.Accounts)
 	// Step 7: per-account sequential fetch (with optional refresh).
 	for _, acct := range reconcileOut.Accounts {
-		ar := providers.AccountResult{
-			Email:  acct.Email,
-			UUID:   acct.UUID,
-			Plan:   acct.RateLimitTier,
-			Active: acct.UUID == reconcileOut.ActiveUUID,
-		}
+		ar := claudeAccountResult(reconcileOut.Accounts, acct, acct.Key() == reconcileOut.ActiveKey)
 
 		// Refresh if the token is near expiry (ExpiresAt present and within skew).
 		now := c.now()
@@ -554,7 +592,7 @@ func (c *Client) Fetch(ctx context.Context) (providers.ProviderOutput, error) {
 			}
 		}
 
-		limits, fetchErr := c.fetchLimitsCached(poolCtx, StoredAccessToken(acct), acct.UUID)
+		limits, fetchErr := c.fetchLimitsCached(poolCtx, StoredAccessToken(acct), acct.Key())
 		if ok, trans := multiaccount.RecordFetchOutcome(&ar, limits, fetchErr); ok {
 			successCount++
 		} else if trans {
@@ -563,7 +601,7 @@ func (c *Client) Fetch(ctx context.Context) (providers.ProviderOutput, error) {
 		accountResults = append(accountResults, ar)
 	}
 
-	// Sort: active first, then by Email ASCII ascending (D3, deterministic).
+	// Sort: active first, then email and opaque key.
 	// The provider-level Limits field is left nil — when Accounts is populated,
 	// ProviderResult.MarshalJSON omits the top-level "limits" key entirely, and
 	// the text renderer routes on len(Accounts) > 0 to its per-account view.
@@ -615,8 +653,8 @@ func (c *Client) FetchForSwitch(ctx context.Context) ([]providers.AccountResult,
 		return nil, fmt.Errorf("claude: reading account store: %w", err)
 	}
 
-	// ResolveActiveUUID is read-only: at most one profile call, no writes.
-	activeUUID, _ := ResolveActiveUUID(ReconcileInput{
+	// ResolveActiveKey is read-only: at most one profile call, no writes.
+	activeKey, _ := ResolveActiveKey(ReconcileInput{
 		LiveBlob: live,
 		Stored:   stored,
 		LookupProfile: func(token string) (Profile, error) {
@@ -627,7 +665,7 @@ func (c *Client) FetchForSwitch(ctx context.Context) ([]providers.AccountResult,
 
 	var nonActive []accounts.Account
 	for _, acct := range stored {
-		if acct.UUID != activeUUID {
+		if acct.Key() != activeKey {
 			nonActive = append(nonActive, acct)
 		}
 	}
@@ -636,27 +674,43 @@ func (c *Client) FetchForSwitch(ctx context.Context) ([]providers.AccountResult,
 	poolCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
+	sortAccountsByKey(nonActive)
 	var results []providers.AccountResult
 	for _, acct := range nonActive {
-		limits, fetchErr := c.fetchLimitsCached(poolCtx, StoredAccessToken(acct), acct.UUID)
+		limits, fetchErr := c.fetchLimitsCached(poolCtx, StoredAccessToken(acct), acct.Key())
 		if fetchErr != nil {
+			label := address.AccountLabel(stored, acct)
 			if errors.Is(fetchErr, providers.ErrAuthDenied) {
-				c.warnf("aistat: claude: %s: stored credential rejected (run `aistat usage` to refresh); excluded from auto-pick\n", acct.Email)
+				c.warnf("aistat: claude: %s: stored credential rejected (run `aistat usage` to refresh); excluded from auto-pick\n", label)
 			} else {
-				c.warnf("aistat: claude: %s: usage fetch failed (%s); excluded from auto-pick\n", acct.Email, fetchErr)
+				c.warnf("aistat: claude: %s: usage fetch failed (%s); excluded from auto-pick\n", label, fetchErr)
 			}
 			continue
 		}
-		results = append(results, providers.AccountResult{
-			Email:  acct.Email,
-			UUID:   acct.UUID,
-			Plan:   acct.RateLimitTier,
-			Active: false,
-			Limits: limits,
-		})
+		ar := claudeAccountResult(stored, acct, false)
+		ar.Limits = limits
+		results = append(results, ar)
 	}
 
+	multiaccount.SortAccountResults(results)
 	return results, nil
+}
+
+func sortAccountsByKey(stored []accounts.Account) {
+	sort.Slice(stored, func(i, j int) bool { return stored[i].Key() < stored[j].Key() })
+}
+
+func claudeAccountResult(stored []accounts.Account, account accounts.Account, active bool) providers.AccountResult {
+	return providers.AccountResult{
+		Email:            account.Email,
+		UUID:             account.UUID,
+		Key:              account.Key(),
+		Address:          address.AddressFor(stored, account),
+		OrganizationName: account.OrganizationName,
+		OrganizationType: account.OrganizationType,
+		Plan:             account.RateLimitTier,
+		Active:           active,
+	}
 }
 
 // PostSwitchVerify is a no-op for Claude — Claude has no post-switch failure modes that need a courtesy check.

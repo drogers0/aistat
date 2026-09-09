@@ -30,8 +30,13 @@ for one. JSON is the default and is what you should parse.
 - If an `accounts` array is present, iterate it and read each row's own
   `limits.<window>` (this is how **Claude and Codex** render — always per-account,
   even with a single stored account; each row carries `email`, `active`, `plan`).
+  Claude rows may also carry the optional `address`, `organization_name`, and
+  `organization_type`.
 - Otherwise read `providers.<name>.limits.<window>` directly (this is how
   **Copilot** renders — a single flat map, no `accounts`).
+
+Claude can hold several contexts under one email, so `email` is not a unique
+selector. Pass the row's printed `address` to `--to`.
 
 Each window carries:
 

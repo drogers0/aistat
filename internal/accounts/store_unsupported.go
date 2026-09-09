@@ -13,6 +13,8 @@ var ErrUnsupportedPlatform = errors.New("accounts: platform not supported")
 
 type unsupportedStore struct{}
 
+var _ Store = unsupportedStore{}
+
 // OpenStore returns the unsupported-platform store stub.
 func OpenStore(provider Provider, opts ...Option) (Store, error) {
 	if err := provider.validate(); err != nil {
@@ -29,4 +31,8 @@ func (unsupportedStore) Upsert(_ context.Context, _ Account) error {
 
 func (unsupportedStore) Delete(_ context.Context, _ string) error {
 	return ErrUnsupportedPlatform
+}
+
+func (unsupportedStore) Promote(_ context.Context, _ Promotion) (PromotionResult, error) {
+	return PromotionSourceChanged, ErrUnsupportedPlatform
 }

@@ -3,6 +3,7 @@
 package accounts
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,9 +14,17 @@ import (
 )
 
 type fileStore struct {
-	provider Provider
-	path     string
-	lockPath string
+	provider     Provider
+	path         string
+	lockPath     string
+	writeAccount func(map[string]Account) error
+}
+
+func (s *fileStore) writeAccountMap(m map[string]Account) error {
+	if s.writeAccount != nil {
+		return s.writeAccount(m)
+	}
+	return s.atomicWrite(m)
 }
 
 // OpenStore returns the file-backed account store for the given provider (Linux
@@ -124,18 +133,18 @@ func (s *fileStore) Upsert(ctx context.Context, a Account) error {
 		if err != nil {
 			return err
 		}
-		m[a.UUID] = a
-		return s.atomicWrite(m)
+		m[a.Key()] = a
+		return s.writeAccountMap(m)
 	})
 }
 
-func (s *fileStore) Delete(ctx context.Context, uuid string) error {
+func (s *fileStore) Delete(ctx context.Context, key string) error {
 	return s.withLock(true, func() error {
 		m, err := s.readAccountMap()
 		if err != nil {
 			return err
 		}
-		delete(m, uuid)
+		delete(m, key)
 		if len(m) == 0 {
 			// Remove the data file when the last account is deleted. Leave
 			// the lock sentinel in place so subsequent writers serialize
@@ -145,6 +154,35 @@ func (s *fileStore) Delete(ctx context.Context, uuid string) error {
 			}
 			return nil
 		}
-		return s.atomicWrite(m)
+		return s.writeAccountMap(m)
 	})
+}
+
+func (s *fileStore) Promote(ctx context.Context, instruction Promotion) (PromotionResult, error) {
+	var result PromotionResult
+	err := s.withLock(true, func() error {
+		m, err := s.readAccountMap()
+		if err != nil {
+			return err
+		}
+		source, ok := m[instruction.SourceKey]
+		if !ok || !bytes.Equal(source.RawBlob, instruction.ObservedSourceRawBlob) {
+			result = PromotionSourceChanged
+			return nil
+		}
+		destination, present := m[instruction.Destination.Key()]
+		if present != instruction.ExpectedDestinationPresent ||
+			(present && !bytes.Equal(destination.RawBlob, instruction.ExpectedDestinationRawBlob)) {
+			result = PromotionDestinationChanged
+			return nil
+		}
+		m[instruction.Destination.Key()] = instruction.Destination
+		delete(m, instruction.SourceKey)
+		if err := s.writeAccountMap(m); err != nil {
+			return err
+		}
+		result = PromotionCompleted
+		return nil
+	})
+	return result, err
 }

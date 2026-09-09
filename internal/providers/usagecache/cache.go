@@ -1,6 +1,6 @@
 //go:build darwin || linux || windows
 
-// Package usagecache is a provider-neutral, per-UUID usage limit cache backed
+// Package usagecache is a provider-neutral, per-opaque-account-key usage limit cache backed
 // by a single JSON file in $CACHE/aistat/usage/. It is used by provider
 // packages (e.g. internal/providers/claude) to reduce API round-trips.
 //
@@ -24,7 +24,7 @@ import (
 
 const ttlDefault = 90 * time.Second
 
-// Cache is a file-backed, per-UUID usage limit cache. All exported methods are
+// Cache is a file-backed, per-opaque-account-key usage limit cache. All exported methods are
 // safe for concurrent use. The zero value is not usable; construct via New.
 type Cache struct {
 	provider    string
@@ -165,7 +165,7 @@ func (c *Cache) atomicWrite(cf cacheFile) error {
 // fire the warn line once; subsequent reads stay quiet. The cache stores
 // absolute ResetsAt in each Limit; ResetAfterSeconds is NOT recomputed here —
 // that is the caller's responsibility.
-func (c *Cache) GetWithAge(uuid string) (map[string]providers.Limit, time.Duration, bool) {
+func (c *Cache) GetWithAge(key string) (map[string]providers.Limit, time.Duration, bool) {
 	if c.disabled {
 		c.once.Do(func() { c.warn(c.disabledMsg) })
 		return nil, 0, false
@@ -190,7 +190,7 @@ func (c *Cache) GetWithAge(uuid string) (map[string]providers.Limit, time.Durati
 			})
 			return nil // treat as miss
 		}
-		entry, ok := cf.Entries[uuid]
+		entry, ok := cf.Entries[key]
 		if !ok {
 			return nil // miss
 		}
@@ -214,18 +214,18 @@ func (c *Cache) GetWithAge(uuid string) (map[string]providers.Limit, time.Durati
 	return result, age, found
 }
 
-// Get returns (limits, true) if a non-expired entry exists for uuid.
+// Get returns (limits, true) if a non-expired entry exists for key.
 // Returns (nil, false) on miss, expired, or any error. See GetWithAge for
 // the full contract.
-func (c *Cache) Get(uuid string) (map[string]providers.Limit, bool) {
-	m, _, ok := c.GetWithAge(uuid)
+func (c *Cache) Get(key string) (map[string]providers.Limit, bool) {
+	m, _, ok := c.GetWithAge(key)
 	return m, ok
 }
 
-// Put writes limits under uuid, replacing any existing entry. Best effort:
+// Put writes limits under key, replacing any existing entry. Best effort:
 // errors are swallowed (warn fires at most once on the first write failure).
 // Writes via tmp + rename under LOCK_EX on the sentinel lock file.
-func (c *Cache) Put(uuid string, limits map[string]providers.Limit) {
+func (c *Cache) Put(key string, limits map[string]providers.Limit) {
 	if c.disabled {
 		c.once.Do(func() { c.warn(c.disabledMsg) })
 		return
@@ -240,14 +240,14 @@ func (c *Cache) Put(uuid string, limits map[string]providers.Limit) {
 		if len(data) > 0 {
 			// Ignore parse errors on read-for-update. A corrupt file is treated
 			// as empty: cf stays zero-valued and we overwrite it with a fresh
-			// single-entry file below. Other UUIDs' entries are lost, but the
+			// single-entry file below. Other account-key entries are lost, but the
 			// cache is fail-open — they will be repopulated on their next fetch.
 			json.Unmarshal(data, &cf) //nolint:errcheck
 		}
 		if cf.Entries == nil {
 			cf.Entries = make(map[string]cacheEntry)
 		}
-		cf.Entries[uuid] = cacheEntry{
+		cf.Entries[key] = cacheEntry{
 			FetchedAt: c.now(),
 			Limits:    limits,
 		}

@@ -1,6 +1,7 @@
 package accounts
 
 import (
+	"bytes"
 	"context"
 	"sync"
 )
@@ -31,13 +32,31 @@ func (m *MemoryStore) List(_ context.Context) ([]Account, error) {
 func (m *MemoryStore) Upsert(_ context.Context, a Account) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.accounts[a.UUID] = a
+	m.accounts[a.Key()] = a
 	return nil
 }
 
-func (m *MemoryStore) Delete(_ context.Context, uuid string) error {
+func (m *MemoryStore) Delete(_ context.Context, key string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.accounts, uuid)
+	delete(m.accounts, key)
 	return nil
+}
+
+func (m *MemoryStore) Promote(_ context.Context, instruction Promotion) (PromotionResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	source, ok := m.accounts[instruction.SourceKey]
+	if !ok || !bytes.Equal(source.RawBlob, instruction.ObservedSourceRawBlob) {
+		return PromotionSourceChanged, nil
+	}
+	destination, present := m.accounts[instruction.Destination.Key()]
+	if present != instruction.ExpectedDestinationPresent ||
+		(present && !bytes.Equal(destination.RawBlob, instruction.ExpectedDestinationRawBlob)) {
+		return PromotionDestinationChanged, nil
+	}
+	m.accounts[instruction.Destination.Key()] = instruction.Destination
+	delete(m.accounts, instruction.SourceKey)
+	return PromotionCompleted, nil
 }

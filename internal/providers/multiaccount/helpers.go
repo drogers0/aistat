@@ -11,14 +11,17 @@ import (
 	"github.com/drogers0/aistat/v2/internal/providers"
 )
 
-// SortAccountResults sorts results in-place: active first, then by Email ASCII
-// ascending. Deterministic ordering keeps JSON output diff-stable.
+// SortAccountResults sorts results in-place: active first, then email and
+// opaque account key. Deterministic ordering keeps JSON output diff-stable.
 func SortAccountResults(results []providers.AccountResult) {
 	sort.SliceStable(results, func(i, j int) bool {
 		if results[i].Active != results[j].Active {
 			return results[i].Active
 		}
-		return results[i].Email < results[j].Email
+		if results[i].Email != results[j].Email {
+			return results[i].Email < results[j].Email
+		}
+		return results[i].Key < results[j].Key
 	})
 }
 

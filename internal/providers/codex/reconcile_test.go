@@ -130,8 +130,8 @@ func TestReconcile(t *testing.T) {
 				Now:      testNow,
 			})
 
-			if out.ActiveUUID != "uuid-0" {
-				t.Errorf("ActiveUUID = %q, want %q", out.ActiveUUID, "uuid-0")
+			if out.ActiveKey != "uuid-0" {
+				t.Errorf("ActiveKey = %q, want %q", out.ActiveKey, "uuid-0")
 			}
 			if !out.Upserted {
 				t.Error("Upserted = false, want true")
@@ -164,8 +164,8 @@ func TestReconcile(t *testing.T) {
 				Now:      testNow,
 			})
 
-			if out.ActiveUUID != "uuid-0" {
-				t.Errorf("ActiveUUID = %q, want %q", out.ActiveUUID, "uuid-0")
+			if out.ActiveKey != "uuid-0" {
+				t.Errorf("ActiveKey = %q, want %q", out.ActiveKey, "uuid-0")
 			}
 			if !out.Upserted {
 				t.Error("Upserted = false, want true")
@@ -192,8 +192,8 @@ func TestReconcile(t *testing.T) {
 				Now:      testNow,
 			})
 
-			if out.ActiveUUID != "uuid-0" {
-				t.Errorf("ActiveUUID = %q, want %q", out.ActiveUUID, "uuid-0")
+			if out.ActiveKey != "uuid-0" {
+				t.Errorf("ActiveKey = %q, want %q", out.ActiveKey, "uuid-0")
 			}
 			if !out.Upserted {
 				t.Error("Upserted = false, want true")
@@ -219,8 +219,8 @@ func TestReconcile(t *testing.T) {
 				Now:      testNow,
 			})
 
-			if out.ActiveUUID != "uuid-brand-new" {
-				t.Errorf("ActiveUUID = %q, want %q", out.ActiveUUID, "uuid-brand-new")
+			if out.ActiveKey != "uuid-brand-new" {
+				t.Errorf("ActiveKey = %q, want %q", out.ActiveKey, "uuid-brand-new")
 			}
 			if !out.Inserted {
 				t.Error("Inserted = false, want true")
@@ -250,8 +250,8 @@ func TestReconcile(t *testing.T) {
 				Now:      testNow,
 			})
 
-			if out.ActiveUUID != "uuid-fresh" {
-				t.Errorf("ActiveUUID = %q, want %q", out.ActiveUUID, "uuid-fresh")
+			if out.ActiveKey != "uuid-fresh" {
+				t.Errorf("ActiveKey = %q, want %q", out.ActiveKey, "uuid-fresh")
 			}
 			if !out.Inserted {
 				t.Error("Inserted = false, want true")
@@ -278,8 +278,8 @@ func TestReconcile(t *testing.T) {
 				Now:      testNow,
 			})
 
-			if out.ActiveUUID != "" {
-				t.Errorf("ActiveUUID = %q, want empty", out.ActiveUUID)
+			if out.ActiveKey != "" {
+				t.Errorf("ActiveKey = %q, want empty", out.ActiveKey)
 			}
 			if out.LiveUnstored == nil {
 				t.Fatal("LiveUnstored should be non-nil on fallback")
@@ -341,8 +341,8 @@ func TestReconcile(t *testing.T) {
 				Now:      testNow,
 			})
 
-			if out.ActiveUUID != "" {
-				t.Errorf("ActiveUUID = %q, want empty", out.ActiveUUID)
+			if out.ActiveKey != "" {
+				t.Errorf("ActiveKey = %q, want empty", out.ActiveKey)
 			}
 			if len(out.Accounts) != 2 {
 				t.Errorf("Accounts len = %d, want 2", len(out.Accounts))
@@ -365,8 +365,8 @@ func TestReconcile(t *testing.T) {
 				Now:      testNow,
 			})
 
-			if out.ActiveUUID != "" {
-				t.Errorf("ActiveUUID = %q, want empty", out.ActiveUUID)
+			if out.ActiveKey != "" {
+				t.Errorf("ActiveKey = %q, want empty", out.ActiveKey)
 			}
 			if len(out.Accounts) != 0 {
 				t.Errorf("Accounts len = %d, want 0", len(out.Accounts))
@@ -387,8 +387,8 @@ func TestReconcile(t *testing.T) {
 				Now:      testNow,
 			})
 
-			if out.ActiveUUID != "uuid-first" {
-				t.Errorf("ActiveUUID = %q, want %q (first-match-wins)", out.ActiveUUID, "uuid-first")
+			if out.ActiveKey != "uuid-first" {
+				t.Errorf("ActiveKey = %q, want %q (first-match-wins)", out.ActiveKey, "uuid-first")
 			}
 			if !out.Upserted {
 				t.Error("Upserted = false, want true")
@@ -400,9 +400,9 @@ func TestReconcile(t *testing.T) {
 	}
 }
 
-// ── ResolveActiveUUID tests ───────────────────────────────────────────────────
+// ── ResolveActiveKey tests ───────────────────────────────────────────────────
 
-func TestResolveActiveUUID(t *testing.T) {
+func TestResolveActiveKey(t *testing.T) {
 	tests := []struct {
 		name string
 		run  func(t *testing.T)
@@ -415,7 +415,7 @@ func TestResolveActiveUUID(t *testing.T) {
 			}
 			live := makeCodexCred("tok-b", "ref-b", 2000) // matches slot[1]
 
-			uuid, err := ResolveActiveUUID(ReconcileInput{
+			uuid, err := ResolveActiveKey(ReconcileInput{
 				LiveBlob: live,
 				Stored:   stored,
 				LookupID: noLookupCall(t),
@@ -434,7 +434,7 @@ func TestResolveActiveUUID(t *testing.T) {
 			}
 			live := makeCodexCred("tok-c", "ref-c", 3000) // no byte-match
 
-			uuid, err := ResolveActiveUUID(ReconcileInput{
+			uuid, err := ResolveActiveKey(ReconcileInput{
 				LiveBlob: live,
 				Stored:   stored,
 				LookupID: fixedLookup("uuid-from-lookup", "x@example.com"),
@@ -442,20 +442,20 @@ func TestResolveActiveUUID(t *testing.T) {
 			})
 
 			testutil.WantNoErr(t, err)
-			if uuid != "uuid-from-lookup" {
-				t.Errorf("uuid = %q, want %q", uuid, "uuid-from-lookup")
+			if uuid != "" {
+				t.Errorf("uuid = %q, want empty for unstored lookup key", uuid)
 			}
 		}},
 		{"lookup fails returns empty", func(t *testing.T) {
 			// LookupID error → ("", nil).
 			// All LookupID failures are pure parse errors (D1); never surfaced as errors
-			// from ResolveActiveUUID.
+			// from ResolveActiveKey.
 			stored := []accounts.Account{
 				makeCodexAccount("uuid-0", "user0@example.com", "tok-a", "ref-a", 1000),
 			}
 			live := makeCodexCred("tok-c", "ref-c", 3000)
 
-			uuid, err := ResolveActiveUUID(ReconcileInput{
+			uuid, err := ResolveActiveKey(ReconcileInput{
 				LiveBlob: live,
 				Stored:   stored,
 				LookupID: errLookup(fmt.Errorf("parse error")),
@@ -480,7 +480,7 @@ func TestResolveActiveUUID(t *testing.T) {
 
 			live := makeCodexCred("tok-c", "ref-c", 3000) // no byte-match
 
-			_, _ = ResolveActiveUUID(ReconcileInput{
+			_, _ = ResolveActiveKey(ReconcileInput{
 				LiveBlob: live,
 				Stored:   stored,
 				LookupID: fixedLookup("uuid-0", "changed@example.com"),

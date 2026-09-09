@@ -36,7 +36,7 @@ func TestNewAccount(t *testing.T) {
 			raw := rawBlob("at-abc", "rt-xyz", 1234567890000)
 			now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 
-			a, err := NewAccount(raw, "uuid-1", "user@example.com", "User", "default_claude_max_5x", now)
+			a, err := NewAccount(raw, "uuid-1", "user@example.com", "User", "default_claude_max_5x", "", "", "", now)
 			if err != nil {
 				t.Fatalf("NewAccount: %v", err)
 			}
@@ -58,20 +58,20 @@ func TestNewAccount(t *testing.T) {
 			}
 		}},
 		{"empty raw", func(t *testing.T) {
-			_, err := NewAccount(json.RawMessage{}, "uuid-1", "user@example.com", "", "", time.Now())
+			_, err := NewAccount(json.RawMessage{}, "uuid-1", "user@example.com", "", "", "", "", "", time.Now())
 			if err == nil {
 				t.Fatal("expected error for empty raw blob")
 			}
 		}},
 		{"invalid json", func(t *testing.T) {
-			_, err := NewAccount(json.RawMessage(`{not json`), "uuid-1", "user@example.com", "", "", time.Now())
+			_, err := NewAccount(json.RawMessage(`{not json`), "uuid-1", "user@example.com", "", "", "", "", "", time.Now())
 			if err == nil {
 				t.Fatal("expected error for invalid JSON")
 			}
 		}},
 		{"empty uuid", func(t *testing.T) {
 			raw := rawBlob("at-abc", "rt-xyz", 0)
-			_, err := NewAccount(raw, "", "user@example.com", "", "", time.Now())
+			_, err := NewAccount(raw, "", "user@example.com", "", "", "", "", "", time.Now())
 			if err == nil {
 				t.Fatal("expected error for empty uuid")
 			}
@@ -80,7 +80,7 @@ func TestNewAccount(t *testing.T) {
 		// validation is provider-specific.
 		{"no access token required", func(t *testing.T) {
 			raw := json.RawMessage(`{"claudeAiOauth":{"accessToken":""}}`)
-			_, err := NewAccount(raw, "uuid-1", "user@example.com", "", "", time.Now())
+			_, err := NewAccount(raw, "uuid-1", "user@example.com", "", "", "", "", "", time.Now())
 			if err != nil {
 				t.Fatalf("NewAccount should succeed without accessToken; got %v", err)
 			}
@@ -89,7 +89,7 @@ func TestNewAccount(t *testing.T) {
 		// means we don't inspect the fields.
 		{"any valid json accepted", func(t *testing.T) {
 			raw := json.RawMessage(`{"otherField":"value"}`)
-			_, err := NewAccount(raw, "uuid-1", "user@example.com", "", "", time.Now())
+			_, err := NewAccount(raw, "uuid-1", "user@example.com", "", "", "", "", "", time.Now())
 			if err != nil {
 				t.Fatalf("NewAccount should accept any valid JSON; got %v", err)
 			}
@@ -103,7 +103,7 @@ func TestNewAccount(t *testing.T) {
 func TestAccount_RoundTrip(t *testing.T) {
 	raw := rawBlob("at-round", "rt-round", 111222333)
 	now := time.Date(2024, 6, 15, 12, 0, 0, 0, time.UTC)
-	orig, err := NewAccount(raw, "uuid-rt", "rt@example.com", "RT User", "default_claude_pro", now)
+	orig, err := NewAccount(raw, "uuid-rt", "rt@example.com", "RT User", "default_claude_pro", "", "", "", now)
 	if err != nil {
 		t.Fatalf("NewAccount: %v", err)
 	}
@@ -125,5 +125,29 @@ func TestAccount_RoundTrip(t *testing.T) {
 	}
 	if string(restored.RawBlob) != string(orig.RawBlob) {
 		t.Errorf("RawBlob after round-trip: got %q, want %q", restored.RawBlob, orig.RawBlob)
+	}
+}
+
+func TestAccountKey(t *testing.T) {
+	tests := []struct {
+		name    string
+		account Account
+		want    string
+	}{
+		{"legacy", Account{UUID: "account"}, "account"},
+		{"defensive personal sentinel", Account{UUID: "account", OrganizationUUID: PersonalOrganizationUUID}, "account_personal"},
+		{"team organization", Account{UUID: "account", OrganizationUUID: "550e8400-e29b-41d4-a716-446655440000", OrganizationName: "Acme", OrganizationType: "claude_team"}, "account_550e8400-e29b-41d4-a716-446655440000"},
+		{"known personal organization", Account{UUID: "account", OrganizationUUID: "550e8400-e29b-41d4-a716-446655440000", OrganizationType: "claude_max"}, "account_550e8400-e29b-41d4-a716-446655440000"},
+		{"empty organization name", Account{UUID: "account", OrganizationUUID: "550e8400-e29b-41d4-a716-446655440000"}, "account_550e8400-e29b-41d4-a716-446655440000"},
+		{"empty organization uuid", Account{UUID: "account", OrganizationUUID: ""}, "account"},
+		{"reserved personal collision", Account{UUID: "account", OrganizationUUID: "personal", OrganizationName: "personal", OrganizationType: "claude_team"}, "account_personal"},
+		{"malformed organization uuid", Account{UUID: "account", OrganizationUUID: "not-a-uuid"}, "account_not-a-uuid"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.account.Key(); got != tt.want {
+				t.Errorf("Key() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

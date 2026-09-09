@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/drogers0/aistat/v2/internal/accounts"
+	"github.com/drogers0/aistat/v2/internal/address"
 	"github.com/drogers0/aistat/v2/internal/autoswitch"
 	"github.com/drogers0/aistat/v2/internal/cred"
 	"github.com/drogers0/aistat/v2/internal/orchestrate"
@@ -37,9 +38,9 @@ var (
 		return claude.New(debug, ua, claude.WithStore(store))
 	}
 
-	// switchLookupActiveUUID resolves the currently-active account UUID from the
+	// switchLookupActiveKey resolves the currently-active account key from the
 	// live Claude credential.
-	switchLookupActiveUUID = realSwitchLookupActiveUUID
+	switchLookupActiveKey = realSwitchLookupActiveKey
 
 	// fetchLiveUsage fetches usage limits for the active Claude account's access token.
 	fetchLiveUsage = realFetchLiveUsage
@@ -52,8 +53,8 @@ var (
 		return codex.New(debug, ua, codex.WithStore(store))
 	}
 
-	// switchLookupCodexActiveUUID resolves the currently-active Codex account UUID.
-	switchLookupCodexActiveUUID = realSwitchLookupCodexActiveUUID
+	// switchLookupCodexActiveKey resolves the currently-active Codex account key.
+	switchLookupCodexActiveKey = realSwitchLookupCodexActiveKey
 
 	// fetchCodexLiveUsage fetches usage limits for the active Codex account.
 	fetchCodexLiveUsage = realFetchCodexLiveUsage
@@ -63,18 +64,18 @@ var (
 	watchSleepFn = sleepWithCtx
 )
 
-// resolveCodexActiveUUID reads the live Codex credential and resolves the
-// currently-active account UUID. Returns ("", nil) when unknowable (no live
-// blob, parse error). Called by both realSwitchLookupCodexActiveUUID and
-// makeRealCodexActiveUUIDResolver.
-func resolveCodexActiveUUID(ctx context.Context, stored []accounts.Account) (string, error) {
+// resolveCodexActiveKey reads the live Codex credential and resolves the
+// currently-active account key. Returns ("", nil) when unknowable (no live
+// blob, parse error). Called by both realSwitchLookupCodexActiveKey and
+// makeRealCodexActiveKeyResolver.
+func resolveCodexActiveKey(ctx context.Context, stored []accounts.Account) (string, error) {
 	credCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	cr, err := cred.ReadCodexCredential(credCtx)
 	if err != nil {
 		return "", nil // ErrCodexTokenNotFound or read failure → "no active account"
 	}
-	return codex.ResolveActiveUUID(codex.ReconcileInput{
+	return codex.ResolveActiveKey(codex.ReconcileInput{
 		LiveBlob: &cr,
 		Stored:   stored,
 		LookupID: func(idToken string) (string, string, error) {
@@ -85,8 +86,8 @@ func resolveCodexActiveUUID(ctx context.Context, stored []accounts.Account) (str
 	})
 }
 
-func realSwitchLookupCodexActiveUUID(ctx context.Context, stored []accounts.Account, _ io.Writer) (string, error) {
-	return resolveCodexActiveUUID(ctx, stored)
+func realSwitchLookupCodexActiveKey(ctx context.Context, stored []accounts.Account, _ io.Writer) (string, error) {
+	return resolveCodexActiveKey(ctx, stored)
 }
 
 func realFetchCodexLiveUsage(ctx context.Context, token, uuid, ua string, debug io.Writer) (map[string]providers.Limit, error) {
@@ -97,9 +98,9 @@ func realFetchLiveUsage(ctx context.Context, token, uuid, ua string, debug io.Wr
 	return claude.New(debug, ua).FetchUsage(ctx, token, uuid)
 }
 
-// realSwitchLookupActiveUUID reads the live credential and resolves the
-// currently-active Claude account UUID.
-func realSwitchLookupActiveUUID(ctx context.Context, stored []accounts.Account, debug io.Writer) (string, error) {
+// realSwitchLookupActiveKey reads the live credential and resolves the
+// currently-active Claude account key.
+func realSwitchLookupActiveKey(ctx context.Context, stored []accounts.Account, debug io.Writer) (string, error) {
 	credCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	cr, err := cred.ReadClaudeCredential(credCtx)
@@ -110,7 +111,7 @@ func realSwitchLookupActiveUUID(ctx context.Context, stored []accounts.Account, 
 		return "", nil // treat any read failure as "no active account"
 	}
 	lookupClient := claude.New(debug, claude.DefaultUserAgent(resolvedVersion()))
-	return claude.ResolveActiveUUID(claude.ReconcileInput{
+	return claude.ResolveActiveKey(claude.ReconcileInput{
 		LiveBlob: &cr,
 		Stored:   stored,
 		LookupProfile: func(token string) (claude.Profile, error) {
@@ -158,7 +159,7 @@ func buildSwitchHandles(debugW io.Writer, version string) ([]switchHandle, error
 			ua:             claudeUA,
 			loginHint:      "run `claude /login` to add another",
 			client:         newSwitchClient(debugW, claudeUA, claudeStore),
-			lookupActive:   switchLookupActiveUUID,
+			lookupActive:   switchLookupActiveKey,
 			writeLiveBlob:  writeClaudeLiveBlob,
 			fetchLiveUsage: fetchLiveUsage,
 			storedAccess:   func(a accounts.Account) string { return claude.StoredAccessToken(a) },
@@ -169,7 +170,7 @@ func buildSwitchHandles(debugW io.Writer, version string) ([]switchHandle, error
 			ua:             codexUA,
 			loginHint:      "add another ChatGPT account and run `aistat usage` to register it",
 			client:         newCodexSwitchClient(debugW, codexUA, codexStore),
-			lookupActive:   switchLookupCodexActiveUUID,
+			lookupActive:   switchLookupCodexActiveKey,
 			writeLiveBlob:  writeCodexLiveBlob,
 			fetchLiveUsage: fetchCodexLiveUsage,
 			storedAccess:   func(a accounts.Account) string { return codex.StoredAccessToken(a) },
@@ -277,11 +278,11 @@ func lastSeenOf(a *accounts.Account) time.Time {
 	return a.LastSeenAt
 }
 
-// findAccountByUUID returns a pointer to the first account in stored whose UUID
-// equals uuid, or nil if not found.
-func findAccountByUUID(stored []accounts.Account, uuid string) *accounts.Account {
+// findAccountByKey returns a pointer to the account in stored whose opaque key
+// equals key, or nil if not found.
+func findAccountByKey(stored []accounts.Account, key string) *accounts.Account {
 	for i := range stored {
-		if stored[i].UUID == uuid {
+		if stored[i].Key() == key {
 			return &stored[i]
 		}
 	}
@@ -486,18 +487,19 @@ func routeConditional(ctx context.Context, handles []switchHandle, providerArg s
 // adopts the refreshed slice (a switchable's List returns a fresh header each
 // call).
 type conditionalResult struct {
-	stored   []accounts.Account
-	reason   string
-	limits   map[string]providers.Limit
-	proceed  bool
-	exitCode int
+	stored    []accounts.Account
+	activeKey string
+	reason    string
+	limits    map[string]providers.Limit
+	proceed   bool
+	exitCode  int
 }
 
 // evaluateConditional runs the threshold gate for the active account: reconcile
 // the live credential back into the store, re-read it, fetch the active
 // account's usage, and decide whether a switch should proceed. It performs no
 // switch and mutates no live credential itself.
-func (h switchHandle) evaluateConditional(ctx context.Context, stored []accounts.Account, activeUUID string, opts switchOpts, stdout, stderr, debugW io.Writer) conditionalResult {
+func (h switchHandle) evaluateConditional(ctx context.Context, stored []accounts.Account, activeKey string, opts switchOpts, stdout, stderr, debugW io.Writer) conditionalResult {
 	// The active account's stored blob goes stale between polls — the upstream
 	// CLI refreshes the live credential in place and only `usage`'s reconcile
 	// syncs it back. Reconcile here (best effort) and re-read the store so
@@ -506,23 +508,24 @@ func (h switchHandle) evaluateConditional(ctx context.Context, stored []accounts
 	_ = h.client.ReconcileAndPersist(ctx)
 	if refreshed, err := h.store.List(ctx); err == nil {
 		stored = refreshed
+		activeKey, _ = h.lookupActive(ctx, stored, debugW)
 	}
-	activeAcct := findAccountByUUID(stored, activeUUID)
+	activeAcct := findAccountByKey(stored, activeKey)
 	if activeAcct == nil {
 		fmt.Fprintf(stderr, "aistat: %s: cannot determine the active account; skipping conditional switch\n", h.id)
-		return conditionalResult{stored: stored, exitCode: int(orchestrate.StatusAnyFailed)}
+		return conditionalResult{stored: stored, activeKey: activeKey, exitCode: int(orchestrate.StatusAnyFailed)}
 	}
-	limits, err := h.fetchLiveUsage(ctx, h.storedAccess(*activeAcct), activeAcct.UUID, h.ua, debugW)
+	limits, err := h.fetchLiveUsage(ctx, h.storedAccess(*activeAcct), activeAcct.Key(), h.ua, debugW)
 	if err != nil {
 		fmt.Fprintf(stderr, "aistat: %s: usage fetch for active account failed: %s\n", h.id, err)
-		return conditionalResult{stored: stored, exitCode: int(orchestrate.StatusAnyFailed)}
+		return conditionalResult{stored: stored, activeKey: activeKey, exitCode: int(orchestrate.StatusAnyFailed)}
 	}
 	reason, triggered := triggerReason(limits, opts.th)
 	if !triggered {
 		fmt.Fprintf(stdout, "no switch needed (%s)\n", usageSummary(limits))
-		return conditionalResult{stored: stored, exitCode: 0}
+		return conditionalResult{stored: stored, activeKey: activeKey, exitCode: 0}
 	}
-	return conditionalResult{stored: stored, reason: reason, limits: limits, proceed: true}
+	return conditionalResult{stored: stored, activeKey: activeKey, reason: reason, limits: limits, proceed: true}
 }
 
 // runSwitchSingle performs a switch for a single provider handle.
@@ -534,10 +537,10 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, opts swi
 		return int(orchestrate.StatusUsageError)
 	}
 
-	activeUUID, _ := h.lookupActive(ctx, stored, debugW)
-	prevEmail := "none"
-	if activeAcct := findAccountByUUID(stored, activeUUID); activeAcct != nil {
-		prevEmail = activeAcct.Email
+	activeKey, _ := h.lookupActive(ctx, stored, debugW)
+	prevLabel := "none"
+	if activeAcct := findAccountByKey(stored, activeKey); activeAcct != nil {
+		prevLabel = address.AccountLabel(stored, *activeAcct)
 	}
 
 	// condReason is non-empty iff the conditional gate evaluated and triggered;
@@ -565,8 +568,8 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, opts swi
 	var target accounts.Account
 
 	if toArg != "" {
-		// Explicit --to mode: resolve by email substring or UUID prefix.
-		matches := matchAccounts(toArg, stored)
+		// Explicit --to mode: resolve through the shared address matcher.
+		matches := address.Match(stored, toArg)
 		switch len(matches) {
 		case 0:
 			fmt.Fprintf(stderr, "no stored account matches %q\n", toArg)
@@ -574,12 +577,12 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, opts swi
 		case 1:
 			// fall through
 		default:
-			fmt.Fprintf(stderr, "multiple stored accounts match %q, disambiguate by uuid\n", toArg)
+			writeAccountAmbiguity(stderr, stored, toArg, matches)
 			return int(orchestrate.StatusUsageError)
 		}
 		target = matches[0]
-		if target.UUID == activeUUID {
-			fmt.Fprintf(stdout, "already on %s\n", target.Email)
+		if target.Key() == activeKey {
+			fmt.Fprintf(stdout, "already on %s\n", address.AccountLabel(stored, target))
 			return 0
 		}
 	} else {
@@ -594,14 +597,17 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, opts swi
 		}
 
 		if opts.conditional {
-			r := h.evaluateConditional(ctx, stored, activeUUID, opts, stdout, stderr, debugW)
+			r := h.evaluateConditional(ctx, stored, activeKey, opts, stdout, stderr, debugW)
 			if !r.proceed {
 				return r.exitCode
 			}
-			stored, condReason, condActiveLimits = r.stored, r.reason, r.limits
+			stored, activeKey, condReason, condActiveLimits = r.stored, r.activeKey, r.reason, r.limits
+			if activeAcct := findAccountByKey(stored, activeKey); activeAcct != nil {
+				prevLabel = address.AccountLabel(stored, *activeAcct)
+			}
 		}
 
-		if len(stored) == 1 && stored[0].UUID == activeUUID {
+		if len(stored) == 1 && stored[0].Key() == activeKey {
 			notifyNoBetter()
 			fmt.Fprintf(stderr, msgOnlyOneAccount, h.loginHint)
 			if opts.conditional {
@@ -618,18 +624,18 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, opts swi
 		}
 
 		if len(candidates) == 0 {
-			fmt.Fprintln(stderr, "auto-pick failed: no accounts produced usable usage data; try `aistat switch --to <email>`")
+			fmt.Fprintln(stderr, "auto-pick failed: no accounts produced usable usage data; try `aistat switch --to <address>`")
 			return failCode
 		}
 
 		// Rank candidates: non-exhausted ▸ more 5h headroom ▸ more weekly runway ▸ most recent.
 		best := candidates[0]
-		bestAcct := findAccountByUUID(stored, best.UUID)
+		bestAcct := findAccountByKey(stored, best.Key)
 		bestScore := scoreAccount(best.Limits, lastSeenOf(bestAcct))
 		for _, c := range candidates[1:] {
-			cAcct := findAccountByUUID(stored, c.UUID)
+			cAcct := findAccountByKey(stored, c.Key)
 			cScore := scoreAccount(c.Limits, lastSeenOf(cAcct))
-			if cScore.better(bestScore) {
+			if cScore.better(bestScore) || (!bestScore.better(cScore) && c.Key < best.Key) {
 				best, bestAcct, bestScore = c, cAcct, cScore
 			}
 		}
@@ -638,22 +644,22 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, opts swi
 		// fetchLiveUsage is read-only: no store mutation. The conditional gate
 		// above already fetched this when it triggered — reuse it instead of
 		// fetching twice.
-		if activeAcct := findAccountByUUID(stored, activeUUID); activeAcct != nil {
+		if activeAcct := findAccountByKey(stored, activeKey); activeAcct != nil {
 			activeLimits, liveErr := condActiveLimits, error(nil)
 			if activeLimits == nil {
-				activeLimits, liveErr = h.fetchLiveUsage(ctx, h.storedAccess(*activeAcct), activeAcct.UUID, h.ua, debugW)
+				activeLimits, liveErr = h.fetchLiveUsage(ctx, h.storedAccess(*activeAcct), activeAcct.Key(), h.ua, debugW)
 			}
 			if liveErr == nil {
 				if !bestScore.better(scoreAccount(activeLimits, activeAcct.LastSeenAt)) {
 					notifyNoBetter()
-					fmt.Fprintf(stdout, "already on best account (%s)\n", prevEmail)
+					fmt.Fprintf(stdout, "already on best account (%s)\n", prevLabel)
 					return 0
 				}
 			}
 		}
 
 		if bestAcct == nil {
-			fmt.Fprintln(stderr, "auto-pick failed: no accounts produced usable usage data; try `aistat switch --to <email>`")
+			fmt.Fprintln(stderr, "auto-pick failed: no accounts produced usable usage data; try `aistat switch --to <address>`")
 			return failCode
 		}
 		target = *bestAcct
@@ -670,9 +676,10 @@ func runSwitchSingle(ctx context.Context, h switchHandle, toArg string, opts swi
 	// Post-write reconcile so the store's LastSeenAt reflects the new active.
 	_ = h.client.ReconcileAndPersist(ctx)
 
-	fmt.Fprintf(stdout, "switched to %s (uuid %s); was %s\n", target.Email, target.UUID, prevEmail)
+	targetLabel := address.AccountLabel(stored, target)
+	fmt.Fprintf(stdout, "switched to %s; was %s\n", targetLabel, prevLabel)
 	if opts.notify {
-		msg := "switched to " + target.Email
+		msg := "switched to " + targetLabel
 		if condReason != "" {
 			msg += " (" + condReason + ")"
 		}
@@ -720,8 +727,9 @@ func runSwitchBulk(ctx context.Context, handles []switchHandle, opts switchOpts,
 // exactly one provider matches. Ambiguous cross-provider matches exit 2.
 func runSwitchInferProvider(ctx context.Context, handles []switchHandle, toArg string, opts switchOpts, stdout, stderr, debugW io.Writer) int {
 	type match struct {
-		h    switchHandle
-		acct accounts.Account
+		h      switchHandle
+		acct   accounts.Account
+		stored []accounts.Account
 	}
 	var matches []match
 	var listErrs []string
@@ -731,8 +739,8 @@ func runSwitchInferProvider(ctx context.Context, handles []switchHandle, toArg s
 			listErrs = append(listErrs, fmt.Sprintf("aistat: %s: could not list accounts: %s", h.id, err))
 			continue
 		}
-		for _, m := range matchAccounts(toArg, stored) {
-			matches = append(matches, match{h, m})
+		for _, m := range address.Match(stored, toArg) {
+			matches = append(matches, match{h: h, acct: m, stored: stored})
 		}
 	}
 	if len(matches) == 0 {
@@ -754,7 +762,11 @@ func runSwitchInferProvider(ctx context.Context, handles []switchHandle, toArg s
 		fmt.Fprintf(stderr, "multiple providers match %q; specify provider: aistat switch <provider> --to %s\n", toArg, toArg)
 		return int(orchestrate.StatusUsageError)
 	}
-	// All matches in the same provider — single-provider disambiguation.
-	fmt.Fprintf(stderr, "multiple stored accounts match %q, disambiguate by uuid\n", toArg)
+	// All matches in the same provider — use the shared canonical labels.
+	accountsForLabels := make([]accounts.Account, 0, len(matches))
+	for _, match := range matches {
+		accountsForLabels = append(accountsForLabels, match.acct)
+	}
+	writeAccountAmbiguity(stderr, matches[0].stored, toArg, accountsForLabels)
 	return int(orchestrate.StatusUsageError)
 }

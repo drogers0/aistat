@@ -188,6 +188,35 @@ func TestAccountResult(t *testing.T) {
 				t.Fatalf("AccountResult field order wrong; got %s", s)
 			}
 		}},
+		{"claude context fields are additive and codex fields omit", func(t *testing.T) {
+			claudeJSON, err := json.Marshal(AccountResult{
+				Email:            "me@example.com",
+				UUID:             "9f2a41c7-3b5d-4e7f-9a1c-2d4e6f8a0b1c",
+				Key:              "9f2a41c7-3b5d-4e7f-9a1c-2d4e6f8a0b1c_7d3c58e9-6a2b-4f81-b771-1c9e5d3a7042",
+				Address:          "me@example.com/personal-9f2a41c7",
+				OrganizationName: "me@example.com's Organization",
+				OrganizationType: "claude_max",
+				Plan:             "default_claude_max_5x",
+				Active:           true,
+				Limits:           map[string]Limit{},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			const wantClaude = "{\"email\":\"me@example.com\",\"address\":\"me@example.com/personal-9f2a41c7\",\"organization_name\":\"me@example.com's Organization\",\"organization_type\":\"claude_max\",\"plan\":\"default_claude_max_5x\",\"active\":true,\"limits\":{}}"
+			if string(claudeJSON) != wantClaude {
+				t.Fatalf("Claude JSON = %s, want %s", claudeJSON, wantClaude)
+			}
+
+			codexJSON, err := json.Marshal(AccountResult{Email: "codex@example.com", UUID: "uuid-codex", Key: "uuid-codex", Active: true, Limits: map[string]Limit{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			const wantCodex = "{\"email\":\"codex@example.com\",\"plan\":\"\",\"active\":true,\"limits\":{}}"
+			if string(codexJSON) != wantCodex {
+				t.Fatalf("Codex JSON = %s, want %s", codexJSON, wantCodex)
+			}
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.run)

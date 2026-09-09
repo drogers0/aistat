@@ -26,6 +26,7 @@ var rateLimitTierLabels = map[string]string{
 	"default_claude_max_20x": "Max 20x",
 	"default_claude_pro":     "Pro",
 	"default_claude_free":    "Free",
+	"default_raven":          "Raven",
 }
 
 // formatPlanLabel returns the friendly label for a known tier, the raw value
@@ -108,13 +109,17 @@ func renderAccountsSection(title, providerID string, accts []providers.AccountRe
 	lines := []string{title}
 	known := textLabels[providerID]
 	for _, ar := range accts {
-		// "- <email>[ (active)][ [Plan]]"
+		// "- <email>[ (active)][ [Plan]][ <claude context>]" — see claudeContext
+		// for the Claude-only context suffix ("(personal)", "(<name>, team)", "(<name>)").
 		header := "- " + ar.Email
 		if ar.Active {
 			header += " (active)"
 		}
 		if label := formatPlanLabel(ar.Plan); label != "" {
 			header += " [" + label + "]"
+		}
+		if providerID == "claude" {
+			header += claudeContext(ar)
 		}
 		if ar.Error != "" {
 			lines = append(lines, header+": "+ar.Error)
@@ -143,6 +148,25 @@ func renderAccountsSection(title, providerID string, accts []providers.AccountRe
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+func claudeContext(account providers.AccountResult) string {
+	switch account.OrganizationType {
+	case "claude_max", "claude_pro":
+		return " (personal)"
+	case "claude_team":
+		if account.OrganizationName != "" {
+			return " (" + account.OrganizationName + ", team)"
+		}
+	default:
+		if account.OrganizationName != "" {
+			return " (" + account.OrganizationName + ")"
+		}
+	}
+	if strings.Contains(account.Address, "/personal-") {
+		return " (personal)"
+	}
+	return ""
 }
 
 // humanizeWindowKey turns a model-scoped window key like "seven_day_fable" or

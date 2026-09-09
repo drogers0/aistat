@@ -42,11 +42,12 @@ func makeCred(accessToken, refreshToken string, expiresAt int64) *cred.Credentia
 // makeAccount constructs a stored Account with the given identity and token fields.
 func makeAccount(uuid, email, accessToken, refreshToken string, expiresAt int64) accounts.Account {
 	return accounts.Account{
-		UUID:        uuid,
-		Email:       email,
-		DisplayName: email,
-		LastSeenAt:  time.Time{},
-		RawBlob:     rawBlob(accessToken, refreshToken, expiresAt),
+		UUID:             uuid,
+		Email:            email,
+		DisplayName:      email,
+		OrganizationUUID: accounts.PersonalOrganizationUUID,
+		LastSeenAt:       time.Time{},
+		RawBlob:          rawBlob(accessToken, refreshToken, expiresAt),
 	}
 }
 
@@ -96,8 +97,8 @@ func TestReconcile_ByteMatch(t *testing.T) {
 				Now:           testNow,
 			})
 
-			if out.ActiveUUID != "uuid-0" {
-				t.Errorf("ActiveUUID = %q, want %q", out.ActiveUUID, "uuid-0")
+			if out.ActiveKey != "uuid-0_personal" {
+				t.Errorf("ActiveKey = %q, want %q", out.ActiveKey, "uuid-0_personal")
 			}
 			if !out.Upserted {
 				t.Error("Upserted = false, want true")
@@ -131,8 +132,8 @@ func TestReconcile_ByteMatch(t *testing.T) {
 				Now:           testNow,
 			})
 
-			if out.ActiveUUID != "uuid-0" {
-				t.Errorf("ActiveUUID = %q, want %q", out.ActiveUUID, "uuid-0")
+			if out.ActiveKey != "uuid-0_personal" {
+				t.Errorf("ActiveKey = %q, want %q", out.ActiveKey, "uuid-0_personal")
 			}
 			if !out.Upserted {
 				t.Error("Upserted = false, want true")
@@ -171,10 +172,11 @@ func TestReconcile_Profile(t *testing.T) {
 			live := makeCred("tok-c", "ref-c", 3000) // no byte-match
 
 			prof := Profile{
-				AccountUUID:   "uuid-1",
-				Email:         "user1-new@example.com", // changed email (identity drift)
-				DisplayName:   "New Name",
-				RateLimitTier: "claude_max_5x",
+				AccountUUID:      "uuid-1",
+				Email:            "user1-new@example.com", // changed email (identity drift)
+				DisplayName:      "New Name",
+				RateLimitTier:    "claude_max_5x",
+				OrganizationUUID: accounts.PersonalOrganizationUUID,
 			}
 
 			out := Reconcile(ReconcileInput{
@@ -184,8 +186,8 @@ func TestReconcile_Profile(t *testing.T) {
 				Now:           testNow,
 			})
 
-			if out.ActiveUUID != "uuid-1" {
-				t.Errorf("ActiveUUID = %q, want %q", out.ActiveUUID, "uuid-1")
+			if out.ActiveKey != "uuid-1_personal" {
+				t.Errorf("ActiveKey = %q, want %q", out.ActiveKey, "uuid-1_personal")
 			}
 			if !out.Upserted {
 				t.Error("Upserted = false, want true")
@@ -222,8 +224,8 @@ func TestReconcile_Profile(t *testing.T) {
 				Now:           testNow,
 			})
 
-			if out.ActiveUUID != "uuid-brand-new" {
-				t.Errorf("ActiveUUID = %q, want %q", out.ActiveUUID, "uuid-brand-new")
+			if out.ActiveKey != "uuid-brand-new" {
+				t.Errorf("ActiveKey = %q, want %q", out.ActiveKey, "uuid-brand-new")
 			}
 			if !out.Inserted {
 				t.Error("Inserted = false, want true")
@@ -259,8 +261,8 @@ func TestReconcile_Profile(t *testing.T) {
 				Now:           testNow,
 			})
 
-			if out.ActiveUUID != "" {
-				t.Errorf("ActiveUUID = %q, want empty", out.ActiveUUID)
+			if out.ActiveKey != "" {
+				t.Errorf("ActiveKey = %q, want empty", out.ActiveKey)
 			}
 			if out.LiveUnstored == nil {
 				t.Fatal("LiveUnstored should be non-nil on fallback")
@@ -320,7 +322,7 @@ func TestReconcile_Profile(t *testing.T) {
 			}
 			live := makeCred("tok-c", "ref-c", 3000)
 
-			missingErr := fmt.Errorf("%w: got uuid=%q email=%q", ErrProfileMissingFields, "", "")
+			missingErr := fmt.Errorf("%w: got uuid=%q email=%q organization.uuid=%q", ErrProfileMissingFields, "", "", "")
 
 			out := Reconcile(ReconcileInput{
 				LiveBlob:      live,
@@ -332,8 +334,9 @@ func TestReconcile_Profile(t *testing.T) {
 			if out.LiveUnstored == nil {
 				t.Fatal("LiveUnstored should be non-nil on fallback")
 			}
-			if !strings.Contains(out.CaptureWarn, "missing required fields") {
-				t.Errorf("CaptureWarn = %q, want stricter diagnostic containing 'missing required fields'", out.CaptureWarn)
+			want := "aistat: claude: profile response missing required fields (account.uuid/account.email/organization.uuid); rendering live row without storing; file an issue at https://github.com/drogers0/aistat/issues"
+			if out.CaptureWarn != want {
+				t.Errorf("CaptureWarn = %q, want %q", out.CaptureWarn, want)
 			}
 			if strings.Contains(out.CaptureWarn, "claude /login") {
 				t.Errorf("CaptureWarn = %q, must not contain 'claude /login' for missing-fields case", out.CaptureWarn)
@@ -358,8 +361,8 @@ func TestReconcile_Profile(t *testing.T) {
 				Now:           testNow,
 			})
 
-			if out.ActiveUUID != "uuid-fresh" {
-				t.Errorf("ActiveUUID = %q, want %q", out.ActiveUUID, "uuid-fresh")
+			if out.ActiveKey != "uuid-fresh" {
+				t.Errorf("ActiveKey = %q, want %q", out.ActiveKey, "uuid-fresh")
 			}
 			if !out.Inserted {
 				t.Error("Inserted = false, want true")
@@ -399,8 +402,8 @@ func TestReconcile_LiveAbsent(t *testing.T) {
 				Now:           testNow,
 			})
 
-			if out.ActiveUUID != "" {
-				t.Errorf("ActiveUUID = %q, want empty", out.ActiveUUID)
+			if out.ActiveKey != "" {
+				t.Errorf("ActiveKey = %q, want empty", out.ActiveKey)
 			}
 			if len(out.Accounts) != 2 {
 				t.Errorf("Accounts len = %d, want 2", len(out.Accounts))
@@ -423,8 +426,8 @@ func TestReconcile_LiveAbsent(t *testing.T) {
 				Now:           testNow,
 			})
 
-			if out.ActiveUUID != "" {
-				t.Errorf("ActiveUUID = %q, want empty", out.ActiveUUID)
+			if out.ActiveKey != "" {
+				t.Errorf("ActiveKey = %q, want empty", out.ActiveKey)
 			}
 			if len(out.Accounts) != 0 {
 				t.Errorf("Accounts len = %d, want 0", len(out.Accounts))
@@ -438,36 +441,43 @@ func TestReconcile_LiveAbsent(t *testing.T) {
 
 // ── TestReconcile_DuplicateAccessToken ──────────────────────────────────────
 
-// TestReconcile_DuplicateAccessToken pins the deterministic winner: when two
-// stored slots share the same access token, findActive returns the first match
-// by stored-slice order.
+// TestReconcile_DuplicateAccessToken pins profile-based canonical selection
+// when token matches alone identify multiple stored contexts.
 func TestReconcile_DuplicateAccessToken(t *testing.T) {
-	// Both slots share "tok-dup". First-match-wins is intentional and documented.
+	// Store the profiled account second: selecting the first token match would be
+	// observably wrong.
 	stored := []accounts.Account{
-		makeAccount("uuid-first", "first@example.com", "tok-dup", "ref-a", 1000),
 		makeAccount("uuid-second", "second@example.com", "tok-dup", "ref-b", 2000),
+		makeAccount("uuid-first", "first@example.com", "tok-dup", "ref-a", 1000),
 	}
 	live := makeCred("tok-dup", "ref-a", 1000)
+	profileCalls := 0
 
 	out := Reconcile(ReconcileInput{
-		LiveBlob:      live,
-		Stored:        stored,
-		LookupProfile: noProfileCall(t),
-		Now:           testNow,
+		LiveBlob: live,
+		Stored:   stored,
+		LookupProfile: func(string) (Profile, error) {
+			profileCalls++
+			return Profile{AccountUUID: "uuid-first", Email: "first@example.com", OrganizationUUID: accounts.PersonalOrganizationUUID}, nil
+		},
+		Now: testNow,
 	})
 
-	// First match wins.
-	if out.ActiveUUID != "uuid-first" {
-		t.Errorf("ActiveUUID = %q, want %q (first-match-wins)", out.ActiveUUID, "uuid-first")
+	// Duplicate tokens are resolved by their profiled canonical key.
+	if profileCalls != 1 {
+		t.Fatalf("profile calls = %d, want 1", profileCalls)
+	}
+	if out.ActiveKey != "uuid-first_personal" {
+		t.Errorf("ActiveKey = %q, want %q", out.ActiveKey, "uuid-first_personal")
 	}
 	if !out.Upserted {
 		t.Error("Upserted = false, want true")
 	}
 }
 
-// ── TestResolveActiveUUID ────────────────────────────────────────────────────
+// ── TestResolveActiveKey ─────────────────────────────────────────────────────
 
-func TestResolveActiveUUID(t *testing.T) {
+func TestResolveActiveKey(t *testing.T) {
 	tests := []struct {
 		name string
 		run  func(t *testing.T)
@@ -480,7 +490,7 @@ func TestResolveActiveUUID(t *testing.T) {
 			}
 			live := makeCred("tok-b", "ref-b", 2000) // matches slot[1]
 
-			uuid, err := ResolveActiveUUID(ReconcileInput{
+			uuid, err := ResolveActiveKey(ReconcileInput{
 				LiveBlob:      live,
 				Stored:        stored,
 				LookupProfile: noProfileCall(t),
@@ -488,8 +498,8 @@ func TestResolveActiveUUID(t *testing.T) {
 			})
 
 			testutil.WantNoErr(t, err)
-			if uuid != "uuid-1" {
-				t.Errorf("uuid = %q, want %q", uuid, "uuid-1")
+			if uuid != "uuid-1_personal" {
+				t.Errorf("uuid = %q, want %q", uuid, "uuid-1_personal")
 			}
 		}},
 		{"profile lookup success", func(t *testing.T) {
@@ -502,7 +512,7 @@ func TestResolveActiveUUID(t *testing.T) {
 
 			prof := Profile{AccountUUID: "uuid-from-profile", Email: "x@example.com"}
 
-			uuid, err := ResolveActiveUUID(ReconcileInput{
+			uuid, err := ResolveActiveKey(ReconcileInput{
 				LiveBlob:      live,
 				Stored:        stored,
 				LookupProfile: fixedProfile(prof),
@@ -510,8 +520,8 @@ func TestResolveActiveUUID(t *testing.T) {
 			})
 
 			testutil.WantNoErr(t, err)
-			if uuid != "uuid-from-profile" {
-				t.Errorf("uuid = %q, want %q", uuid, "uuid-from-profile")
+			if uuid != "" {
+				t.Errorf("uuid = %q, want empty for unstored profile key", uuid)
 			}
 		}},
 		{"profile 401 returns empty", func(t *testing.T) {
@@ -524,7 +534,7 @@ func TestResolveActiveUUID(t *testing.T) {
 
 			authErr := fmt.Errorf("%w: HTTP 401", providers.ErrAuthDenied)
 
-			uuid, err := ResolveActiveUUID(ReconcileInput{
+			uuid, err := ResolveActiveKey(ReconcileInput{
 				LiveBlob:      live,
 				Stored:        stored,
 				LookupProfile: errProfile(authErr),
@@ -548,7 +558,7 @@ func TestResolveActiveUUID(t *testing.T) {
 
 			transientErr := fmt.Errorf("%w: HTTP 503", providers.ErrTransient)
 
-			uuid, err := ResolveActiveUUID(ReconcileInput{
+			uuid, err := ResolveActiveKey(ReconcileInput{
 				LiveBlob:      live,
 				Stored:        stored,
 				LookupProfile: errProfile(transientErr),
@@ -561,7 +571,7 @@ func TestResolveActiveUUID(t *testing.T) {
 			}
 		}},
 		{"no mutation", func(t *testing.T) {
-			// D11 no-write guarantee: ResolveActiveUUID must not mutate any element
+			// D11 no-write guarantee: ResolveActiveKey must not mutate any element
 			// in in.Stored, even when a profile call is made and succeeds.
 			stored := []accounts.Account{
 				makeAccount("uuid-0", "user0@example.com", "tok-a", "ref-a", 1000),
@@ -576,7 +586,7 @@ func TestResolveActiveUUID(t *testing.T) {
 
 			prof := Profile{AccountUUID: "uuid-0", Email: "changed@example.com"}
 
-			_, _ = ResolveActiveUUID(ReconcileInput{
+			_, _ = ResolveActiveKey(ReconcileInput{
 				LiveBlob:      live,
 				Stored:        stored,
 				LookupProfile: fixedProfile(prof),
@@ -616,7 +626,7 @@ func TestResolveActiveUUID(t *testing.T) {
 
 			missingErr := fmt.Errorf("%w: got uuid=%q email=%q", ErrProfileMissingFields, "", "")
 
-			uuid, err := ResolveActiveUUID(ReconcileInput{
+			uuid, err := ResolveActiveKey(ReconcileInput{
 				LiveBlob:      live,
 				Stored:        stored,
 				LookupProfile: errProfile(missingErr),

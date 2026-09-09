@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 
+	"github.com/drogers0/aistat/v2/internal/accounts"
 	"github.com/drogers0/aistat/v2/internal/httpx"
 )
 
@@ -15,18 +17,26 @@ const (
 )
 
 // ErrProfileMissingFields is returned when the profile endpoint responds with
-// HTTP 200 but the required account.uuid or account.email fields are empty.
+// HTTP 200 but the required account.uuid/account.email/organization.uuid
+// identity is missing or invalid.
 // The caller (reconcile path, D1 step 4) maps this to the distinct diagnostic:
-// "aistat: claude: profile response missing required fields (account.uuid/account.email);
+// "aistat: claude: profile response missing required fields (account.uuid/account.email/organization.uuid);
 // rendering live row without storing; file an issue at https://github.com/drogers0/aistat/issues".
-var ErrProfileMissingFields = errors.New("profile response missing required fields (account.uuid/account.email)")
+var ErrProfileMissingFields = errors.New("profile response missing required fields (account.uuid/account.email/organization.uuid)")
+
+var organizationUUIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
 
 // Profile holds the identity fields extracted from GET /api/oauth/profile.
 type Profile struct {
-	AccountUUID   string
-	Email         string
-	DisplayName   string
-	RateLimitTier string // empty on personal accounts (no organization block)
+	AccountUUID string
+	Email       string
+	DisplayName string
+	// RateLimitTier is supplied by the organization block. A nil organization
+	// is a defensive wire case only; observed personal accounts have one.
+	RateLimitTier    string
+	OrganizationUUID string
+	OrganizationName string
+	OrganizationType string
 }
 
 // profileWire is the JSON shape returned by GET /api/oauth/profile.
@@ -37,8 +47,11 @@ type profileWire struct {
 		Email       string `json:"email"`
 		DisplayName string `json:"display_name"`
 	} `json:"account"`
-	// Organization is absent on personal accounts.
+	// Organization is absent only for the defensive personal sentinel case.
 	Organization *struct {
+		UUID          string `json:"uuid"`
+		Name          string `json:"name"`
+		Type          string `json:"organization_type"`
 		RateLimitTier string `json:"rate_limit_tier"`
 	} `json:"organization"`
 }
@@ -62,14 +75,19 @@ func newProfileClient(doer *httpx.Doer) *profileClient {
 //   - 401/403 → wraps providers.ErrAuthDenied (via httpx.DefaultClassify)
 //   - 408/429/5xx → wraps providers.ErrTransient (via httpx.DefaultClassify)
 //   - Other 4xx → bare error
-//   - HTTP 200 with empty account.uuid or account.email → ErrProfileMissingFields
+//   - HTTP 200 with missing identity fields → ErrProfileMissingFields
 func (p *profileClient) Get(ctx context.Context, accessToken string) (Profile, error) {
 	var wire profileWire
 	if err := p.doer.GetJSON(ctx, p.endpoint, accessToken, p.timeout, &wire, httpx.DefaultClassify); err != nil {
 		return Profile{}, err
 	}
-	if wire.Account.UUID == "" || wire.Account.Email == "" {
-		return Profile{}, fmt.Errorf("%w: got uuid=%q email=%q", ErrProfileMissingFields, wire.Account.UUID, wire.Account.Email)
+	wireOrganizationUUID := ""
+	if wire.Organization != nil {
+		wireOrganizationUUID = wire.Organization.UUID
+	}
+	if wire.Account.UUID == "" || wire.Account.Email == "" ||
+		(wire.Organization != nil && (wireOrganizationUUID == "" || wireOrganizationUUID == accounts.PersonalOrganizationUUID || !organizationUUIDPattern.MatchString(wireOrganizationUUID))) {
+		return Profile{}, fmt.Errorf("%w: got uuid=%q email=%q organization.uuid=%q", ErrProfileMissingFields, wire.Account.UUID, wire.Account.Email, wireOrganizationUUID)
 	}
 	prof := Profile{
 		AccountUUID: wire.Account.UUID,
@@ -78,6 +96,11 @@ func (p *profileClient) Get(ctx context.Context, accessToken string) (Profile, e
 	}
 	if wire.Organization != nil {
 		prof.RateLimitTier = wire.Organization.RateLimitTier
+		prof.OrganizationUUID = wire.Organization.UUID
+		prof.OrganizationName = wire.Organization.Name
+		prof.OrganizationType = wire.Organization.Type
+	} else {
+		prof.OrganizationUUID = accounts.PersonalOrganizationUUID
 	}
 	return prof, nil
 }
