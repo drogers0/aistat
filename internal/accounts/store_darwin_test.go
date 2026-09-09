@@ -380,10 +380,24 @@ func TestDarwinPromotionProtocol(t *testing.T) {
 			}
 		}},
 		{"post-commit interruptions stop at every durable boundary", func(t *testing.T) {
+			// One complete Promote issues these commands in order; interrupting at a
+			// durable boundary aborts immediately after that command, so every scenario
+			// expects this sequence truncated at its own boundary. Stating the order
+			// once is the point: four hand-written traces, each a prefix of the next,
+			// drift apart the moment one is edited.
+			promoteCalls := []string{
+				"find-generic-password",   // 1 read source
+				"find-generic-password",   // 2 read destination
+				"add-generic-password",    // 3 write destination      — boundary "destination write"
+				"find-generic-password",   // 4 read index
+				"add-generic-password",    // 5 write index, source and destination both listed — boundary "first index write"
+				"delete-generic-password", // 6 delete source          — boundary "source delete"
+				"add-generic-password",    // 7 write index, source retired — boundary "final index write"
+			}
 			for _, scenario := range []struct {
 				name       string
 				interrupt  func(source, destination Account) func(darwinSecurityCall) bool
-				wantCalls  []string
+				stopsAfter int // promoteCalls length reached before this scenario's boundary aborts
 				wantIndex  func(source, destination, sibling Account) []string
 				sourceGone bool
 			}{
@@ -391,21 +405,21 @@ func TestDarwinPromotionProtocol(t *testing.T) {
 					return func(call darwinSecurityCall) bool {
 						return call.args[0] == "add-generic-password" && darwinArg(call.args, "-s") == darwinPerAccountService(ProviderClaude, destination.Key())
 					}
-				}, []string{"find-generic-password", "find-generic-password", "add-generic-password"}, func(_ Account, _ Account, _ Account) []string {
+				}, 3, func(_ Account, _ Account, _ Account) []string {
 					return []string{"550e8400-e29b-41d4-a716-446655440000", "11111111-1111-4111-8111-111111111111"}
 				}, false},
 				{"first index write", func(_ Account, _ Account) func(darwinSecurityCall) bool {
 					return func(call darwinSecurityCall) bool {
 						return call.args[0] == "add-generic-password" && strings.HasSuffix(darwinArg(call.args, "-s"), ":index")
 					}
-				}, []string{"find-generic-password", "find-generic-password", "add-generic-password", "find-generic-password", "add-generic-password"}, func(source, destination, sibling Account) []string {
+				}, 5, func(source, destination, sibling Account) []string {
 					return []string{"550e8400-e29b-41d4-a716-446655440000", "11111111-1111-4111-8111-111111111111", "550e8400-e29b-41d4-a716-446655440000_7d3c58e9-6a2b-4f81-b771-1c9e5d3a7042"}
 				}, false},
 				{"source delete", func(source Account, _ Account) func(darwinSecurityCall) bool {
 					return func(call darwinSecurityCall) bool {
 						return call.args[0] == "delete-generic-password" && darwinArg(call.args, "-s") == darwinPerAccountService(ProviderClaude, source.Key())
 					}
-				}, []string{"find-generic-password", "find-generic-password", "add-generic-password", "find-generic-password", "add-generic-password", "delete-generic-password"}, func(source, destination, sibling Account) []string {
+				}, 6, func(source, destination, sibling Account) []string {
 					return []string{"550e8400-e29b-41d4-a716-446655440000", "11111111-1111-4111-8111-111111111111", "550e8400-e29b-41d4-a716-446655440000_7d3c58e9-6a2b-4f81-b771-1c9e5d3a7042"}
 				}, true},
 				{"final index write", func(_ Account, _ Account) func(darwinSecurityCall) bool {
@@ -416,7 +430,7 @@ func TestDarwinPromotionProtocol(t *testing.T) {
 						}
 						return indexWrites == 2
 					}
-				}, []string{"find-generic-password", "find-generic-password", "add-generic-password", "find-generic-password", "add-generic-password", "delete-generic-password", "add-generic-password"}, func(_ Account, _ Account, _ Account) []string {
+				}, 7, func(_ Account, _ Account, _ Account) []string {
 					return []string{"11111111-1111-4111-8111-111111111111", "550e8400-e29b-41d4-a716-446655440000_7d3c58e9-6a2b-4f81-b771-1c9e5d3a7042"}
 				}, true},
 			} {
@@ -439,7 +453,7 @@ func TestDarwinPromotionProtocol(t *testing.T) {
 					if result != PromotionResultUnspecified || err == nil {
 						t.Fatalf("Promote = %v, %v", result, err)
 					}
-					if got, want := callTrace(fake.calls), scenario.wantCalls; !reflect.DeepEqual(got, want) {
+					if got, want := callTrace(fake.calls), promoteCalls[:scenario.stopsAfter]; !reflect.DeepEqual(got, want) {
 						t.Fatalf("security call trace = %v, want %v; later command ran", got, want)
 					}
 					if _, ok := fake.items[darwinPerAccountService(ProviderClaude, destination.Key())]; !ok {

@@ -203,15 +203,14 @@ func storeKeySet(t *testing.T, s *accounts.MemoryStore) map[string]bool {
 	return set
 }
 
-type orderedPromotionStore struct {
-	store      *accounts.MemoryStore
+// orderedAccountStore lists stored accounts in a caller-chosen key order (any
+// account not named in order trails it) and records every Promote instruction it
+// forwards, so tests can pin both list-order independence and the exact
+// promotion asked for.
+type orderedAccountStore struct {
+	store      accounts.Store
 	order      []string
 	promotions []accounts.Promotion
-}
-
-type orderedAccountStore struct {
-	store accounts.Store
-	order []string
 }
 
 func (s *orderedAccountStore) List(ctx context.Context) ([]accounts.Account, error) {
@@ -245,6 +244,7 @@ func (s *orderedAccountStore) Delete(ctx context.Context, key string) error {
 }
 
 func (s *orderedAccountStore) Promote(ctx context.Context, instruction accounts.Promotion) (accounts.PromotionResult, error) {
+	s.promotions = append(s.promotions, instruction)
 	return s.store.Promote(ctx, instruction)
 }
 
@@ -280,41 +280,6 @@ func (s *verificationFailStore) Promote(ctx context.Context, instruction account
 	return s.result, s.promoteErr
 }
 
-func (s *orderedPromotionStore) List(ctx context.Context) ([]accounts.Account, error) {
-	stored, err := s.store.List(ctx)
-	if err != nil {
-		return nil, err
-	}
-	byKey := make(map[string]accounts.Account, len(stored))
-	for _, account := range stored {
-		byKey[account.Key()] = account
-	}
-	ordered := make([]accounts.Account, 0, len(stored))
-	for _, key := range s.order {
-		if account, ok := byKey[key]; ok {
-			ordered = append(ordered, account)
-			delete(byKey, key)
-		}
-	}
-	for _, account := range byKey {
-		ordered = append(ordered, account)
-	}
-	return ordered, nil
-}
-
-func (s *orderedPromotionStore) Upsert(ctx context.Context, account accounts.Account) error {
-	return s.store.Upsert(ctx, account)
-}
-
-func (s *orderedPromotionStore) Delete(ctx context.Context, key string) error {
-	return s.store.Delete(ctx, key)
-}
-
-func (s *orderedPromotionStore) Promote(ctx context.Context, instruction accounts.Promotion) (accounts.PromotionResult, error) {
-	s.promotions = append(s.promotions, instruction)
-	return s.store.Promote(ctx, instruction)
-}
-
 func TestFetch_legacyPromotionRetriesIndependentOfListOrder(t *testing.T) {
 	accountUUID := "550e8400-e29b-41d4-a716-446655440000"
 	organizationUUID := "7d3c58e9-6a2b-4f81-b771-1c9e5d3a7042"
@@ -336,7 +301,7 @@ func TestFetch_legacyPromotionRetriesIndependentOfListOrder(t *testing.T) {
 			destination.OrganizationUUID = organizationUUID
 			destination.OrganizationName = "old Acme"
 			destination.OrganizationType = "claude_team"
-			store := &orderedPromotionStore{store: testutil.MemStore(t, source, destination), order: tt.order(source.Key(), destination.Key())}
+			store := &orderedAccountStore{store: testutil.MemStore(t, source, destination), order: tt.order(source.Key(), destination.Key())}
 
 			prePromotion := Reconcile(ReconcileInput{
 				LiveBlob: live,
@@ -1450,27 +1415,6 @@ func TestFetchForSwitch(t *testing.T) {
 
 			if n := refreshCount.Load(); n != 0 {
 				t.Errorf("refresh server received %d requests, expected 0", n)
-			}
-		}},
-		{"revoked stored token", func(t *testing.T) {
-			live := makeCred("tok-active", "ref-active", 0)
-			store := testutil.MemStore(t,
-				makeAccount("uuid-active", "active@example.com", "tok-active", "ref-active", 0),
-				makeAccount("uuid-revoked", "revoked@example.com", "tok-revoked", "ref-revoked", 0),
-			)
-
-			usageSrv := testutil.NewStubServer(t, []byte(`{"error":"OAuth access token has been revoked."}`), http.StatusUnauthorized, nil)
-			profileSrv := testutil.RejectServer(t, "profile")
-			refreshSrv := testutil.RejectServer(t, "refresh")
-
-			var warnBuf bytes.Buffer
-			out, err := buildClient(t, usageSrv, profileSrv, refreshSrv, live, store, &warnBuf, nil).FetchForSwitch(context.Background())
-			testutil.WantNoErr(t, err)
-			if len(out) != 0 {
-				t.Errorf("revoked account should be excluded, got %d results", len(out))
-			}
-			if got, want := warnBuf.String(), "aistat: claude: revoked@example.com/personal-uuidrevo: stored credential rejected (run `claude /login` to recover); excluded from auto-pick\n"; got != want {
-				t.Errorf("warning = %q, want %q", got, want)
 			}
 		}},
 		{"transient exclusion", func(t *testing.T) {

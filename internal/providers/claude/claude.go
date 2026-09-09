@@ -681,11 +681,7 @@ func (c *Client) FetchForSwitch(ctx context.Context) ([]providers.AccountResult,
 		if fetchErr != nil {
 			label := address.AccountLabel(stored, acct)
 			if errors.Is(fetchErr, providers.ErrAuthDenied) {
-				if isRevokedTokenErr(fetchErr) {
-					c.warnf("aistat: claude: %s: stored credential rejected (run `claude /login` to recover); excluded from auto-pick\n", label)
-				} else {
-					c.warnf("aistat: claude: %s: stored credential rejected (run `aistat usage` to refresh); excluded from auto-pick\n", label)
-				}
+				c.warnf("aistat: claude: %s: stored credential rejected (run `aistat usage` to refresh); excluded from auto-pick\n", label)
 			} else {
 				c.warnf("aistat: claude: %s: usage fetch failed (%s); excluded from auto-pick\n", label, fetchErr)
 			}
@@ -698,10 +694,6 @@ func (c *Client) FetchForSwitch(ctx context.Context) ([]providers.AccountResult,
 
 	multiaccount.SortAccountResults(results)
 	return results, nil
-}
-
-func isRevokedTokenErr(err error) bool {
-	return errors.Is(err, providers.ErrAuthDenied) && strings.Contains(err.Error(), "OAuth access token has been revoked.")
 }
 
 func sortAccountsByKey(stored []accounts.Account) {

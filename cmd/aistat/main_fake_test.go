@@ -44,11 +44,12 @@ func TestCLIFakeJSON(t *testing.T) {
 			if personal["email"] != "fake@example.com" || team["email"] != "fake@example.com" {
 				t.Fatalf("Claude fake emails = %v and %v, want same email", personal["email"], team["email"])
 			}
-			if personal["address"] != "fake@example.com/personal-aaaaaaaa" {
-				t.Errorf("personal address = %v, want fake@example.com/personal-aaaaaaaa", personal["address"])
-			}
-			if team["address"] != "fake@example.com/engineering-550e8400" {
-				t.Errorf("team address = %v, want fake@example.com/engineering-550e8400", team["address"])
+			// Address *formatting* is pinned in internal/address; fake mode only smoke-tests
+			// the multi-context shape — every row addressed, and the two rows distinguishable.
+			personalAddr, _ := personal["address"].(string)
+			teamAddr, _ := team["address"].(string)
+			if personalAddr == "" || teamAddr == "" || personalAddr == teamAddr {
+				t.Errorf("addresses = %q and %q, want two distinct non-empty addresses", personalAddr, teamAddr)
 			}
 			if personal["organization_type"] != "claude_max" || team["organization_type"] != "claude_team" {
 				t.Errorf("organization types = %v and %v", personal["organization_type"], team["organization_type"])
