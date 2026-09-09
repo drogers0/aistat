@@ -141,25 +141,36 @@ func (s *darwinStore) readIndex(ctx context.Context) ([]string, error) {
 	if data == "" {
 		return nil, nil
 	}
+	// `uuids` is the field this and every earlier version writes; see writeIndex
+	// for why the name is kept. `keys` is read only because a pre-release build
+	// wrote it briefly, and dropping it here would orphan those stores.
 	var idx struct {
-		Keys  []string `json:"keys"`
 		UUIDs []string `json:"uuids"`
+		Keys  []string `json:"keys"`
 	}
 	if err := json.Unmarshal([]byte(data), &idx); err != nil {
 		return nil, fmt.Errorf("accounts: parse index: %w", err)
 	}
-	return dedupeKeys(append(idx.Keys, idx.UUIDs...)), nil
+	return dedupeKeys(append(idx.UUIDs, idx.Keys...)), nil
 }
 
 // writeIndex persists the opaque key list as the index keychain item.
 // An empty slice deletes the index item entirely (clean state after final remove).
+//
+// The wire field stays `uuids` even though it now holds opaque keys. The name is
+// a deliberate misnomer: a version that predates composite keys reads only
+// `uuids`, and its own writes are read-append-write, so keeping the field means
+// such a version still lists every stored account and preserves the keys it does
+// not understand. Renaming the field would make it read an empty list, conclude
+// there are no stored accounts, re-capture the live credential, and write a fresh
+// index that drops every other context.
 func (s *darwinStore) writeIndex(ctx context.Context, keys []string) error {
 	if len(keys) == 0 {
 		return darwinDeleteItem(ctx, darwinAccountIndexService(s.provider), darwinIndexAccount)
 	}
 	data, err := json.Marshal(struct {
-		Keys []string `json:"keys"`
-	}{Keys: dedupeKeys(keys)})
+		UUIDs []string `json:"uuids"`
+	}{UUIDs: dedupeKeys(keys)})
 	if err != nil {
 		return err
 	}

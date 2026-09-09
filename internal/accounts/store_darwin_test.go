@@ -159,18 +159,20 @@ func (f *fakeDarwinSecurity) putAccount(a Account, account string) {
 
 func (f *fakeDarwinSecurity) setIndex(keys ...string) {
 	data, err := json.Marshal(struct {
-		Keys []string `json:"keys"`
-	}{Keys: keys})
+		UUIDs []string `json:"uuids"`
+	}{UUIDs: keys})
 	if err != nil {
 		panic(err)
 	}
 	f.items[darwinAccountIndexService(ProviderClaude)] = fakeKeychainItem{account: darwinIndexAccount, value: data}
 }
 
-func (f *fakeDarwinSecurity) setLegacyIndex(uuids ...string) {
+// setPrereleaseIndex writes the short-lived `keys` field that a pre-release
+// build emitted, so readIndex is proven to still accept it.
+func (f *fakeDarwinSecurity) setPrereleaseIndex(keys ...string) {
 	data, err := json.Marshal(struct {
-		UUIDs []string `json:"uuids"`
-	}{UUIDs: uuids})
+		Keys []string `json:"keys"`
+	}{Keys: keys})
 	if err != nil {
 		panic(err)
 	}
@@ -184,12 +186,12 @@ func (f *fakeDarwinSecurity) indexKeys(t *testing.T) []string {
 		return nil
 	}
 	var index struct {
-		Keys []string `json:"keys"`
+		UUIDs []string `json:"uuids"`
 	}
 	if err := json.Unmarshal(item.value, &index); err != nil {
 		t.Fatalf("parse fake index: %v", err)
 	}
-	return index.Keys
+	return index.UUIDs
 }
 
 func TestDarwinSecurityProtocol(t *testing.T) {
@@ -256,13 +258,13 @@ func TestDarwinSecurityProtocol(t *testing.T) {
 				t.Errorf("write calls %#v", fake.calls)
 			}
 		}},
-		{"legacy uuids index is read and rewritten as keys", func(t *testing.T) {
+		{"index keeps the uuids field so older versions still read it", func(t *testing.T) {
 			fake := newFakeDarwinSecurity()
 			store := newHermeticDarwinStore(t, fake, nil)
 			legacy := makeTestAccount("550e8400-e29b-41d4-a716-446655440000", "legacy@example.com")
 			newer := makeTestAccount("11111111-1111-4111-8111-111111111111", "new@example.com")
 			fake.putAccount(legacy, "legacy@example.com")
-			fake.setLegacyIndex(legacy.Key())
+			fake.setIndex(legacy.Key())
 			if got, err := store.List(context.Background()); err != nil || len(got) != 1 || got[0].Key() != "550e8400-e29b-41d4-a716-446655440000" {
 				t.Fatalf("List = %#v, %v; want legacy key", got, err)
 			}
@@ -276,11 +278,40 @@ func TestDarwinSecurityProtocol(t *testing.T) {
 			if got, want := fake.indexKeys(t), []string{"550e8400-e29b-41d4-a716-446655440000", "11111111-1111-4111-8111-111111111111"}; !reflect.DeepEqual(got, want) {
 				t.Errorf("rewritten keys = %v, want %v", got, want)
 			}
-			if _, ok := index["uuids"]; ok {
-				t.Errorf("rewritten index retained legacy uuids: %s", fake.items[darwinAccountIndexService(ProviderClaude)].value)
+			if _, ok := index["uuids"]; !ok {
+				t.Errorf("rewritten index dropped the uuids field an older version reads: %s", fake.items[darwinAccountIndexService(ProviderClaude)].value)
 			}
-			if _, ok := index["keys"]; !ok {
-				t.Errorf("rewritten index omitted keys: %s", fake.items[darwinAccountIndexService(ProviderClaude)].value)
+			if _, ok := index["keys"]; ok {
+				t.Errorf("rewritten index emitted keys, which older versions cannot read: %s", fake.items[darwinAccountIndexService(ProviderClaude)].value)
+			}
+		}},
+		{"pre-release keys index is still read and normalized to uuids", func(t *testing.T) {
+			fake := newFakeDarwinSecurity()
+			store := newHermeticDarwinStore(t, fake, nil)
+			stored := makeTestAccount("550e8400-e29b-41d4-a716-446655440000", "upgraded@example.com")
+			fake.putAccount(stored, "upgraded@example.com")
+			fake.setPrereleaseIndex(stored.Key())
+			got, err := store.List(context.Background())
+			if err != nil || len(got) != 1 || got[0].Key() != "550e8400-e29b-41d4-a716-446655440000" {
+				t.Fatalf("List = %#v, %v; want the pre-release-indexed account", got, err)
+			}
+			// Upsert of an already-indexed key does no index write, so add a second
+			// account: the first write after a pre-release read is what normalizes.
+			if err := store.Upsert(context.Background(), makeTestAccount("11111111-1111-4111-8111-111111111111", "second@example.com")); err != nil {
+				t.Fatalf("Upsert: %v", err)
+			}
+			if got, want := fake.indexKeys(t), []string{"550e8400-e29b-41d4-a716-446655440000", "11111111-1111-4111-8111-111111111111"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("normalized index = %v, want both keys", got)
+			}
+			var index map[string]json.RawMessage
+			if err := json.Unmarshal(fake.items[darwinAccountIndexService(ProviderClaude)].value, &index); err != nil {
+				t.Fatalf("parse rewritten index: %v", err)
+			}
+			if _, ok := index["keys"]; ok {
+				t.Errorf("rewrite kept the pre-release keys field: %s", fake.items[darwinAccountIndexService(ProviderClaude)].value)
+			}
+			if _, ok := index["uuids"]; !ok {
+				t.Errorf("rewrite did not normalize to uuids: %s", fake.items[darwinAccountIndexService(ProviderClaude)].value)
 			}
 		}},
 		{"successful empty account value does not compact index", func(t *testing.T) {
