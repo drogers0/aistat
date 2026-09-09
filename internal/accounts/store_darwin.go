@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -359,8 +360,19 @@ func (s *darwinStore) Promote(ctx context.Context, instruction Promotion) (Promo
 		if err != nil {
 			return err
 		}
+		keys, err := s.readIndex(ctx)
+		if err != nil {
+			return err
+		}
+		// The index, not the item, defines a stored account: List walks the index,
+		// so an unindexed item is unreachable. An item written by a promotion that
+		// was interrupted before its index write is therefore debris, not data, and
+		// is treated as absent. Without this the source's blob rotates away from the
+		// frozen copy on the next refresh and the CAS can never match again, leaving
+		// the account permanently unpromotable.
+		indexed := slices.Contains(keys, destinationKey)
 		var existingDestination Account
-		present := !destinationAbsent
+		present := !destinationAbsent && indexed
 		if present {
 			if err := json.Unmarshal(destinationData, &existingDestination); err != nil {
 				return fmt.Errorf("accounts: parse account %s: %w", destinationKey, err)
@@ -376,11 +388,15 @@ func (s *darwinStore) Promote(ctx context.Context, instruction Promotion) (Promo
 		if present {
 			account = existingDestination.Email
 		}
-		if err := darwinWriteItem(ctx, darwinPerAccountService(s.provider, destinationKey), account, string(mustMarshal(instruction.Destination))); err != nil {
-			return err
+		if !destinationAbsent && !indexed {
+			// Unindexed debris: remove it first. darwinWriteItem's -U matches on
+			// (service, account), so writing over a stale item whose account
+			// attribute differs would add a second item rather than replace it.
+			if err := darwinDeleteItem(ctx, darwinPerAccountService(s.provider, destinationKey), ""); err != nil {
+				return err
+			}
 		}
-		keys, err := s.readIndex(ctx)
-		if err != nil {
+		if err := darwinWriteItem(ctx, darwinPerAccountService(s.provider, destinationKey), account, string(mustMarshal(instruction.Destination))); err != nil {
 			return err
 		}
 		keys = appendKey(keys, destinationKey)

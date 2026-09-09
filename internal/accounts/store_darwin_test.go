@@ -388,8 +388,8 @@ func TestDarwinPromotionProtocol(t *testing.T) {
 			promoteCalls := []string{
 				"find-generic-password",   // 1 read source
 				"find-generic-password",   // 2 read destination
-				"add-generic-password",    // 3 write destination      — boundary "destination write"
-				"find-generic-password",   // 4 read index
+				"find-generic-password",   // 3 read index: the index, not the item, decides whether the destination is a live account
+				"add-generic-password",    // 4 write destination      — boundary "destination write"
 				"add-generic-password",    // 5 write index, source and destination both listed — boundary "first index write"
 				"delete-generic-password", // 6 delete source          — boundary "source delete"
 				"add-generic-password",    // 7 write index, source retired — boundary "final index write"
@@ -405,7 +405,7 @@ func TestDarwinPromotionProtocol(t *testing.T) {
 					return func(call darwinSecurityCall) bool {
 						return call.args[0] == "add-generic-password" && darwinArg(call.args, "-s") == darwinPerAccountService(ProviderClaude, destination.Key())
 					}
-				}, 3, func(_ Account, _ Account, _ Account) []string {
+				}, 4, func(_ Account, _ Account, _ Account) []string {
 					return []string{"550e8400-e29b-41d4-a716-446655440000", "11111111-1111-4111-8111-111111111111"}
 				}, false},
 				{"first index write", func(_ Account, _ Account) func(darwinSecurityCall) bool {
