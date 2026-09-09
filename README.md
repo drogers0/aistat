@@ -127,16 +127,6 @@ Whichever account is active when you call `aistat` gets stored automatically. Af
 
 `aistat switch` is the only command that mutates a live credential. `aistat usage` never writes one, but it does persist to the account store — capturing or refreshing the active account, saving rotated refresh tokens, and promoting a newly profiled context — plus its usage-cache writes and the narrow Darwin index-compaction recovery described in [How it works](#how-it-works).
 
-Claude contexts use the opaque composite key `(account UUID, organization UUID)` for storage, active state, switching, and cache entries. Organization identity comes only from the Claude profile endpoint, never from the opaque credential `RawBlob`. A normal personal Max or Pro profile has a real organization block. A nil organization is accepted only as a defensive wire case and uses the storage-key sentinel `personal`.
-
-The storage sentinel and the printable personal token are different. A real `claude_max` or `claude_pro` organization keeps its real organization UUID-backed key and truthful `organization_name` and `organization_type`, but prints `<email>/personal-<short-account-id>` and renders `(personal)`. A nil organization uses that same address path. `claude_team`, unknown types, and empty types use the organization form `<email>/<slug>-<short-org-id>`. The slug is cosmetic; its UUID-hex suffix is the primary identity. `personal` is reserved, so a real organization whose slug normalizes to `personal` uses `organization-<short-org-id>`. `personal-<hex>` is exclusively an account-UUID personal-path selector.
-
-Personal selectors start with eight lowercase hexadecimal account-UUID characters and widen only for distinct personal account UUID prefix collisions. Bare `personal` and `<email>/personal` are unique-only aliases. If the same account is stored twice on the personal path, both rows intentionally print the same selector and selection fails closed as ambiguous. There is no per-account fallback, second discriminator, or organization suffix for that state.
-
-For organization-form addresses, email is consulted only when multiple stored organization UUIDs share the printed hex prefix. Renames and ordinary email changes do not invalidate the address. If the original context is removed, a later context sharing its prefix can resolve the old address, matching the existing current-store-only matcher behavior. There are no tombstones, address history, or email aliases, and no organization enumeration. A profile reconciliation may update the email for the same key, so a duplicate-UUID collision address can fail closed after that update.
-
-Matching is case-insensitive. A suffixed organization address matches its trailing hexadecimal organization-UUID prefix and never compares the slug. Email is used only to break a tie among contexts sharing that prefix. `personal-<hex>` matches only personal-path account-UUID prefixes. `<email>/personal` and bare `personal` are unique-only aliases for the personal path, and a clean organization slug is a unique-only alias for one organization context.
-
 ### aistat switch
 
 `aistat switch` rotates the live credential to a different stored account — no browser round-trip:
@@ -145,7 +135,6 @@ Matching is case-insensitive. A suffixed organization address matches its traili
 - **Explicit** (`aistat switch <provider> --to <address|slug|email|uuid-prefix>`): match a canonical Claude address, a unique organization slug, an email substring, or a UUID prefix. The full printed address is the reliable selector when several Claude contexts share an email.
 
 Auto-pick buckets candidates by 5% (so 87% and 89% are equivalent) and breaks ties by most-recent use. It optimizes **relative headroom**, not "has enough quota for the workload you're about to start" — for nuanced cases, pass `--to` explicitly.
-
 
 > [!NOTE]
 > Multi-account support covers Claude and Codex — Copilot rides on whatever single-account credential its upstream CLI writes.
@@ -251,10 +240,6 @@ systemctl --user enable --now aistat-autoswitch.service
 
 `aistat` reads the credentials `claude /login`, `codex login`, and `gh auth login` already wrote, makes one authenticated HTTPS call per provider in parallel, and normalizes each response into a uniform `{used_percent, remaining_percent, resets_at}` shape. A failing provider doesn't block the others — its error surfaces in the JSON, and a single per-account hiccup on a multi-account provider (Claude or Codex) doesn't flip the overall exit code. Per-account usage is cached for 90 seconds so script-driven polling doesn't burn rate limit.
 
-After a Claude login, the first `aistat usage` that sees the live legacy credential profiles it and may promote it to the composite key. Promotion is conditional and opportunistic: there is no organization enumeration and no sweep of legacy slots. Only a successful store re-read establishes the post-promotion stored view. If the store cannot be re-read after a promotion, `aistat` keeps the promoted account only when the promotion itself reported unambiguous success; in every other case — including a reported completion that also returned an error — it renders the live account alone and reports no stored active account until a later run reads the store successfully.
-
-On Darwin, promotion writes the destination item, writes an index containing both source and destination keys, deletes the source item, and writes the final destination-only index. `List` can later repair that interrupted state. This does not repair a live Keychain item whose index entry is missing, because that item cannot be found without Keychain enumeration.
-
 <details>
 <summary>Endpoints, caching, retries, exit codes, and the JSON contract</summary>
 
@@ -267,8 +252,6 @@ On Darwin, promotion writes the destination item, writes an index containing bot
 | Copilot  | `api.github.com/copilot_internal/user` |
 
 **Caching.** Each Claude and Codex account's usage response is cached for 90 seconds so back-to-back invocations don't hammer the upstream rate limits. Cache entries use the opaque stored account key, so two Claude contexts with one account UUID and different organization UUIDs do not share usage. `aistat usage --refresh` bypasses the cache; `aistat switch` reads through it, so refresh first if you want a switch decision based on the freshest numbers. Override the TTL with `AISTAT_USAGE_CACHE_TTL=10s` (or any duration). If the cache can't be written, the run proceeds without it.
-
-**Darwin recovery.** The Keychain account index may be compacted during `List` only when an indexed account item is positively classified as absent. The compaction is best-effort and does not fail the read. It repairs an index entry whose item is missing, including an interrupted promotion. It cannot discover a live Keychain item whose index entry is missing without Keychain enumeration, so that inverse orphan class is out of scope.
 
 **User-Agent.** The Claude provider sends `User-Agent: claude-code/<version>` on the wire — Anthropic's `/oauth/usage` endpoint aggressively throttles non-`claude-code/` clients ([anthropics/claude-code#31637](https://github.com/anthropics/claude-code/issues/31637)). Override with `AISTAT_CLAUDE_USER_AGENT=<string>` (verbatim, e.g. `aistat/2.1.0`) to opt back into the honest UA. Sibling vars exist for the other providers (`AISTAT_CODEX_USER_AGENT`, `AISTAT_COPILOT_USER_AGENT`); those default to `aistat/<version>` since their endpoints don't currently appear to partition by UA.
 
