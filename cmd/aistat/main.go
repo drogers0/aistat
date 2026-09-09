@@ -66,7 +66,7 @@ func scanGlobals(args []string) (g globals, sub string, rest []string, err error
 		if eqIdx := strings.IndexByte(name, '='); eqIdx >= 0 {
 			flagName := name[:eqIdx]
 			if knownGlobals[flagName] {
-				return g, "", nil, fmt.Errorf("--flag=value form not supported for global flags; use `--" + flagName + "`")
+				return g, "", nil, fmt.Errorf("--flag=value form not supported for global flags; use `--%s`", flagName)
 			}
 			// Unknown flag with = form: leave in rest; subcommand FlagSet handles it.
 			rest = append(rest, arg)
