@@ -10,11 +10,13 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/drogers0/aistat/v2/internal/httpx"
 	"github.com/drogers0/aistat/v2/internal/orchestrate"
 	"github.com/drogers0/aistat/v2/internal/providers"
 	"github.com/drogers0/aistat/v2/internal/render"
+	"github.com/drogers0/aistat/v2/internal/watchstate"
 )
 
 // runUsage runs the `usage` subcommand: fetch and render provider limits.
@@ -83,6 +85,8 @@ func runUsage(args []string, stdout, stderr io.Writer, g globals) int {
 
 	report, status := orchestrate.Run(ctx, requested, chosen, orchestrate.Options{Debug: orchDebug})
 
+	attachWatchers(&report, requested, stderr, g.Debug)
+
 	var renderErr error
 	if g.Human {
 		renderErr = render.Text(stdout, report, requested)
@@ -94,6 +98,49 @@ func runUsage(args []string, stdout, stderr io.Writer, g globals) int {
 		return int(orchestrate.StatusRenderError)
 	}
 	return int(status)
+}
+
+// attachWatchers nests each `switch --watch` heartbeat under every requested
+// provider it covers, so a watcher shows up beside the accounts it guards.
+// A heartbeat whose watcher has died is kept and rendered STALE. A watcher scoped to a provider the caller did not ask for is not
+// reported — scoped output stays scoped.
+//
+// Advisory and best-effort: a watcher's own published thresholds are the only
+// accurate ones (it resolved them from its own environment, not this shell's),
+// and an unreadable state directory must never fail a usage report.
+func attachWatchers(report *providers.Report, requested []string, stderr io.Writer, debug bool) {
+	now := time.Now()
+	heartbeats, err := watchstate.List(now)
+	if err != nil {
+		if debug {
+			fmt.Fprintf(stderr, "aistat: %s\n", err)
+		}
+		return
+	}
+	for _, id := range requested {
+		result, ok := report.Providers[id]
+		if !ok {
+			continue
+		}
+		var views []providers.WatcherView
+		for _, hb := range heartbeats {
+			if !hb.Covers(id) {
+				continue
+			}
+			views = append(views, providers.WatcherView{
+				PID:          hb.PID,
+				IntervalSecs: hb.IntervalSecs,
+				Thresholds:   hb.Thresholds,
+				LastTick:     hb.LastTick,
+				ReadAt:       now,
+			})
+		}
+		if len(views) == 0 {
+			continue
+		}
+		result.Watchers = views
+		report.Providers[id] = result
+	}
 }
 
 // selectedProviders returns the provider ID list to query. When service is

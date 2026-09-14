@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/drogers0/aistat/v2/internal/autoswitch"
+	"github.com/drogers0/aistat/v2/internal/watchstate"
 )
 
 // This file holds the loop primitives for `switch --watch`; the subcommand
@@ -68,4 +70,31 @@ func watchLoop(ctx context.Context, interval time.Duration, tick func(), sleep f
 			return
 		}
 	}
+}
+
+// newHeartbeat builds this watcher's published state. A bulk watcher (empty
+// providerArg) covers every switchable provider.
+func newHeartbeat(handles []switchHandle, providerArg string, interval int, th autoswitch.Thresholds) watchstate.Heartbeat {
+	scope := []string{providerArg}
+	if providerArg == "" {
+		scope = scope[:0]
+		for _, h := range handles {
+			scope = append(scope, h.id)
+		}
+	}
+	return watchstate.Heartbeat{
+		PID:          os.Getpid(),
+		Providers:    scope,
+		IntervalSecs: interval,
+		Thresholds:   watchstate.Thresholds{FiveHour: thresholdPct(th.FiveHour), Weekly: thresholdPct(th.Weekly)},
+	}
+}
+
+// thresholdPct converts a resolved threshold to the heartbeat's nil-means-off
+// representation.
+func thresholdPct(t autoswitch.Threshold) *float64 {
+	if t.Off {
+		return nil
+	}
+	return &t.Pct
 }

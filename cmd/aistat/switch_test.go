@@ -12,6 +12,7 @@ import (
 
 	"github.com/drogers0/aistat/v2/internal/accounts"
 	"github.com/drogers0/aistat/v2/internal/providers"
+	"github.com/drogers0/aistat/v2/internal/testenv"
 	"github.com/drogers0/aistat/v2/internal/testutil"
 )
 
@@ -99,9 +100,11 @@ func runSwitchTest(args ...string) runResult {
 }
 
 // withWatchSleep swaps the watch loop's inter-tick sleep so `switch --watch`
-// tests can bound the loop (returning a non-nil error stops watchLoop).
+// tests can bound the loop (returning a non-nil error stops watchLoop). It also
+// redirects the cache dir, so the watcher's heartbeat never lands in the real one.
 func withWatchSleep(t *testing.T, fn func(context.Context, time.Duration) error) {
 	t.Helper()
+	testenv.RedirectHome(t, t.TempDir())
 	old := watchSleepFn
 	watchSleepFn = fn
 	t.Cleanup(func() { watchSleepFn = old })

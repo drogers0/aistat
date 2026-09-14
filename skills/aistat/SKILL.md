@@ -35,6 +35,11 @@ for one. JSON is the default and is what you should parse.
 - Otherwise read `providers.<name>.limits.<window>` directly (this is how
   **Copilot** renders — a single flat map, no `accounts`).
 
+An optional `watchers` array lists `switch --watch` heartbeats (live or recently
+dead) covering that provider (`pid`, `interval_seconds`, `thresholds`,
+`last_tick`). A watcher whose `last_tick` is older than 1.2 × `interval_seconds`
+is presumed dead — don't assume auto-switching is active.
+
 Claude can hold several contexts under one email, so `email` is not a unique
 selector. Pass the row's printed `address` to `--to`.
 

@@ -7,6 +7,8 @@ import (
 	"math"
 	"strings"
 	"time"
+
+	"github.com/drogers0/aistat/v2/internal/watchstate"
 )
 
 // Sentinel errors that providers wrap with %w so the orchestrator
@@ -104,6 +106,28 @@ func (r Report) MarshalJSON() ([]byte, error) {
 	})
 }
 
+// WatcherView is one `switch --watch` heartbeat covering a provider, live or
+// recently dead. A bulk watcher appears under each provider it covers. Staleness is not
+// carried: it is derived from LastTick and IntervalSecs (see watchstate.Stale).
+type WatcherView struct {
+	PID          int                   `json:"pid"`
+	IntervalSecs int                   `json:"interval_seconds"`
+	Thresholds   watchstate.Thresholds `json:"thresholds"`
+	LastTick     time.Time             `json:"last_tick"`
+	// ReadAt is when usage read the heartbeat. Text ages and staleness are
+	// measured from it, not from Report.CheckedAt, which predates the
+	// provider fetches and would understate a dead watcher's age.
+	ReadAt time.Time `json:"-"`
+}
+
+func (w WatcherView) MarshalJSON() ([]byte, error) {
+	type alias WatcherView
+	return json.Marshal(struct {
+		alias
+		LastTick string `json:"last_tick"`
+	}{alias: alias(w), LastTick: w.LastTick.UTC().Format(iso8601Layout)})
+}
+
 // AccountResult is one stored provider account's contribution to a ProviderResult.
 // Active is intentionally not omitempty — false is meaningful (the account is
 // stored but not currently live). Limits is intentionally NOT omitempty so a
@@ -147,6 +171,10 @@ type ProviderResult struct {
 	Limits   map[string]Limit `json:"limits"`
 	Accounts []AccountResult  `json:"accounts,omitempty"`
 	Error    string           `json:"error,omitempty"`
+	// Watchers lists the `switch --watch` heartbeats covering this provider.
+	// Omitted when none exists, so the common case leaves the output
+	// byte-identical to a build without watcher reporting.
+	Watchers []WatcherView `json:"watchers,omitempty"`
 }
 
 func (r ProviderResult) MarshalJSON() ([]byte, error) {
@@ -156,12 +184,14 @@ func (r ProviderResult) MarshalJSON() ([]byte, error) {
 		return json.Marshal(struct {
 			Accounts []AccountResult `json:"accounts"`
 			Error    string          `json:"error,omitempty"`
-		}{Accounts: r.Accounts, Error: r.Error})
+			Watchers []WatcherView   `json:"watchers,omitempty"`
+		}{Accounts: r.Accounts, Error: r.Error, Watchers: r.Watchers})
 	}
 	// Flat path (Copilot, or Claude/Codex with no stored accounts and an
 	// immediate fetch error): always include limits.
 	return json.Marshal(struct {
-		Limits map[string]Limit `json:"limits"`
-		Error  string           `json:"error,omitempty"`
-	}{Limits: r.Limits, Error: r.Error})
+		Limits   map[string]Limit `json:"limits"`
+		Error    string           `json:"error,omitempty"`
+		Watchers []WatcherView    `json:"watchers,omitempty"`
+	}{Limits: r.Limits, Error: r.Error, Watchers: r.Watchers})
 }
