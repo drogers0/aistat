@@ -26,3 +26,6 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # A stable tag promoted onto an rc's commit would otherwise resolve
+          # to the rc tag (git version sort ranks v2.5.0-rc.1 above v2.5.0).
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
