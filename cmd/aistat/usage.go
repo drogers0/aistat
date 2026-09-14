@@ -103,7 +103,7 @@ func runUsage(args []string, stdout, stderr io.Writer, g globals) int {
 // attachWatchers nests each `switch --watch` heartbeat under every requested
 // provider it covers, so a watcher shows up beside the accounts it guards.
 // A heartbeat whose watcher has died is kept and rendered STALE. A watcher scoped to a provider the caller did not ask for is not
-// reported — scoped output stays scoped.
+// reported: scoped output stays scoped.
 //
 // Advisory and best-effort: a watcher's own published thresholds are the only
 // accurate ones (it resolved them from its own environment, not this shell's),

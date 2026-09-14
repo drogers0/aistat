@@ -537,21 +537,21 @@ func TestTextWatchers(t *testing.T) {
 				Watchers: []providers.WatcherView{fresh, stale},
 			},
 			"Claude usage\n" +
-				"  auto-switch: 5h \u2265 85%, weekly \u2265 95% \u2014 checked 7s ago\n" +
-				"  auto-switch: STALE \u2014 last checked 14m ago (pid 222)\n" +
+				"  auto-switch: 5h \u2265 85%, weekly \u2265 95% (checked 7s ago)\n" +
+				"  auto-switch: STALE, last checked 14m ago (pid 222)\n" +
 				"- me@example.com (active)\n  - 5-hour: 47% (resets in 30m)\n"},
 		{"off threshold under flat header",
 			providers.ProviderResult{
 				Limits:   map[string]providers.Limit{"five_hour": mkLimit(47, 1800)},
 				Watchers: []providers.WatcherView{offWeekly},
 			},
-			"Claude usage\n  auto-switch: 5h \u2265 85%, weekly off \u2014 checked 7s ago\n- 5-hour: 47% (resets in 30m)\n"},
+			"Claude usage\n  auto-switch: 5h \u2265 85%, weekly off (checked 7s ago)\n- 5-hour: 47% (resets in 30m)\n"},
 		{"flat fetch error keeps watcher",
 			providers.ProviderResult{Error: "boom", Watchers: []providers.WatcherView{fresh}},
-			"Claude usage: boom\n  auto-switch: 5h \u2265 85%, weekly \u2265 95% \u2014 checked 7s ago\n"},
+			"Claude usage: boom\n  auto-switch: 5h \u2265 85%, weekly \u2265 95% (checked 7s ago)\n"},
 		{"no windows keeps watcher",
 			providers.ProviderResult{Limits: map[string]providers.Limit{}, Watchers: []providers.WatcherView{fresh}},
-			"Claude usage\n  auto-switch: 5h \u2265 85%, weekly \u2265 95% \u2014 checked 7s ago\n"},
+			"Claude usage\n  auto-switch: 5h \u2265 85%, weekly \u2265 95% (checked 7s ago)\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

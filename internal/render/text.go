@@ -117,13 +117,13 @@ func watcherLines(watchers []providers.WatcherView) []string {
 	for _, w := range watchers {
 		if watchstate.Stale(w.LastTick, w.IntervalSecs, w.ReadAt) {
 			// A watcher that missed its ticks may have been killed without
-			// cleanup. Say so, and keep the pid — it is what you need to reap
+			// cleanup. Say so, and keep the pid: it is what you need to reap
 			// the process or its leftover state.
-			lines = append(lines, fmt.Sprintf("  auto-switch: STALE — last checked %s ago (pid %d)",
+			lines = append(lines, fmt.Sprintf("  auto-switch: STALE, last checked %s ago (pid %d)",
 				formatAgo(w.ReadAt, w.LastTick), w.PID))
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("  auto-switch: 5h %s, weekly %s — checked %s ago",
+		lines = append(lines, fmt.Sprintf("  auto-switch: 5h %s, weekly %s (checked %s ago)",
 			formatThreshold(w.Thresholds.FiveHour), formatThreshold(w.Thresholds.Weekly),
 			formatAgo(w.ReadAt, w.LastTick)))
 	}

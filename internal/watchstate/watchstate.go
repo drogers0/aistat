@@ -2,7 +2,7 @@
 // `aistat switch --watch` daemons.
 //
 // A watcher's thresholds are resolved once at launch from its own flags and
-// environment — a launchd plist or systemd unit, not the user's interactive
+// environment (a launchd plist or systemd unit), not the user's interactive
 // shell. `aistat usage` therefore cannot recompute them; it must read what the
 // running process actually holds. Each watcher owns exactly one file,
 // $CACHE/aistat/watch/<pid>.json, rewritten atomically every tick, so there is
