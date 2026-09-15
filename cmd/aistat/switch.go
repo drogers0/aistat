@@ -311,7 +311,7 @@ func runSwitch(args []string, stdout, stderr io.Writer, g globals) int {
 		fmt.Fprintln(stderr, err.Error())
 		return int(orchestrate.StatusUsageError)
 	}
-	if handled, code := handleGlobals(g, stdout); handled {
+	if handled, code := handleGlobals(g, stdout, stderr); handled {
 		return code
 	}
 	// Extract optional <provider> positional.
@@ -326,7 +326,7 @@ func runSwitch(args []string, stdout, stderr io.Writer, g globals) int {
 		fmt.Fprintln(stderr, err.Error())
 		return int(orchestrate.StatusUsageError)
 	}
-	if handled, code := handleGlobals(g, stdout); handled {
+	if handled, code := handleGlobals(g, stdout, stderr); handled {
 		return code
 	}
 	// Reject leftover positionals.

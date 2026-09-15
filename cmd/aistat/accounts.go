@@ -106,7 +106,7 @@ func runAccounts(
 		fmt.Fprintln(stderr, err.Error())
 		return int(orchestrate.StatusUsageError)
 	}
-	if handled, code := handleGlobals(g, stdout); handled {
+	if handled, code := handleGlobals(g, stdout, stderr); handled {
 		return code
 	}
 
@@ -142,7 +142,7 @@ func runAccountsList(
 		fmt.Fprintln(stderr, err.Error())
 		return int(orchestrate.StatusUsageError)
 	}
-	if handled, code := handleGlobals(*g, stdout); handled {
+	if handled, code := handleGlobals(*g, stdout, stderr); handled {
 		return code
 	}
 
@@ -158,7 +158,7 @@ func runAccountsList(
 		fmt.Fprintln(stderr, err.Error())
 		return int(orchestrate.StatusUsageError)
 	}
-	if handled, code := handleGlobals(*g, stdout); handled {
+	if handled, code := handleGlobals(*g, stdout, stderr); handled {
 		return code
 	}
 	if lfs.NArg() > 0 {
@@ -265,7 +265,7 @@ func runAccountsRemove(
 		fmt.Fprintln(stderr, err.Error())
 		return int(orchestrate.StatusUsageError)
 	}
-	if handled, code := handleGlobals(*g, stdout); handled {
+	if handled, code := handleGlobals(*g, stdout, stderr); handled {
 		return code
 	}
 

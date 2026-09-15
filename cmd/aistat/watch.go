@@ -10,8 +10,11 @@ import (
 	"github.com/drogers0/aistat/v2/internal/watchstate"
 )
 
-// This file holds the loop primitives for `switch --watch`; the subcommand
-// entry point lives in switch.go (runSwitch's --watch branch).
+// This file holds the loop primitives shared by both watch modes: `switch
+// --watch` (entry point in switch.go, runSwitch's --watch branch) and `usage
+// --watch` (entry point in usage_watch.go). watchLoop and sleepWithCtx are
+// generic cadence primitives; newDedupNotifier and the heartbeat helpers below
+// are switch-only.
 
 // newDedupNotifier wraps a notification sender so an unchanged message for the
 // same title is sent at most once per cooldown. This is what makes
