@@ -211,3 +211,55 @@ func TestCLIFakeErrors(t *testing.T) {
 		t.Run(tt.name, tt.run)
 	}
 }
+
+// TestCLIFakeColor is the end-to-end proof that --color reaches the renderer
+// through the real CLI path: the unit tests cover resolution and application
+// separately, and fake mode is the only build where a full colored render can
+// be driven without live credentials.
+func TestCLIFakeColor(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		wantEsc  bool
+		wantRamp string
+	}{
+		{"always forces color into a non-terminal", []string{"--fake", "-h", "--color=always"}, true, "\x1b[38;5;208m"},
+		{"never suppresses it", []string{"--fake", "-h", "--color=never"}, false, ""},
+		{"auto to a non-terminal is off", []string{"--fake", "-h"}, false, ""},
+		{"two-token form is accepted", []string{"--fake", "-h", "--color", "always"}, true, "\x1b[38;5;208m"},
+		{"json is never colored", []string{"--fake", "--color=always"}, false, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := runCLI(tt.args...)
+			if r.code != 0 {
+				t.Fatalf("exit %d, stderr: %s", r.code, r.stderr)
+			}
+			if got := strings.Contains(r.stdout, "\x1b"); got != tt.wantEsc {
+				t.Fatalf("escapes present = %v, want %v\n%s", got, tt.wantEsc, r.stdout)
+			}
+			if tt.wantRamp != "" && !strings.Contains(r.stdout, tt.wantRamp) {
+				t.Errorf("expected ramp color %q in output:\n%s", tt.wantRamp, r.stdout)
+			}
+			// The watcher threshold line must never be colored, whatever the mode.
+			for _, line := range strings.Split(r.stdout, "\n") {
+				if strings.Contains(line, "auto-switch:") && strings.Contains(line, "\x1b") {
+					t.Errorf("watcher line carries an escape: %q", line)
+				}
+			}
+		})
+	}
+}
+
+// TestScanGlobalsFakeFail pins the two-token spelling of a value-taking flag
+// that only exists in this build. Without it in scanGlobals' value-flag
+// registry, `--fake-fail claude` takes "claude" as the subcommand.
+func TestScanGlobalsFakeFail(t *testing.T) {
+	r := runCLI("--fake", "--fake-fail", "claude")
+	if r.code == 2 && strings.Contains(r.stderr, `unknown subcommand "claude"`) {
+		t.Fatalf("--fake-fail swallowed its value's successor: %s", r.stderr)
+	}
+	if !strings.Contains(r.stdout, "claude") {
+		t.Errorf("expected a claude section in output:\n%s", r.stdout)
+	}
+}

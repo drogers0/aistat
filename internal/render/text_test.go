@@ -2,6 +2,7 @@ package render
 
 import (
 	"bytes"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -73,7 +74,7 @@ func TestText(t *testing.T) {
 				},
 			}
 			var buf bytes.Buffer
-			testutil.WantNoErr(t, Text(&buf, r, []string{"claude", "codex", "copilot"}))
+			testutil.WantNoErr(t, Text(&buf, r, []string{"claude", "codex", "copilot"}, false))
 			want := string(testutil.LoadFixture(t, "text-design-sample.golden"))
 			if buf.String() != want {
 				t.Fatalf("got:\n%s\nwant:\n%s", buf.String(), want)
@@ -88,7 +89,7 @@ func TestText(t *testing.T) {
 				},
 			}
 			var buf bytes.Buffer
-			_ = Text(&buf, r, []string{"claude"})
+			_ = Text(&buf, r, []string{"claude"}, false)
 			want := "Claude usage\n- 5-hour: 2% (resets in 4h 53m)\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
@@ -96,14 +97,14 @@ func TestText(t *testing.T) {
 		}},
 		{"requested but none in report", func(t *testing.T) {
 			var buf bytes.Buffer
-			testutil.WantNoErr(t, Text(&buf, providers.Report{}, []string{"claude"}))
+			testutil.WantNoErr(t, Text(&buf, providers.Report{}, []string{"claude"}, false))
 			if buf.Len() != 0 {
 				t.Errorf("expected empty output when no requested providers are in report, got %q", buf.String())
 			}
 		}},
 		{"empty requested", func(t *testing.T) {
 			var buf bytes.Buffer
-			_ = Text(&buf, providers.Report{}, nil)
+			_ = Text(&buf, providers.Report{}, nil, false)
 			if buf.Len() != 0 {
 				t.Fatalf("expected empty, got %q", buf.String())
 			}
@@ -115,7 +116,7 @@ func TestText(t *testing.T) {
 				},
 			}
 			var buf bytes.Buffer
-			_ = Text(&buf, r, []string{"claude"})
+			_ = Text(&buf, r, []string{"claude"}, false)
 			want := "Claude usage: Claude token not found\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
@@ -129,7 +130,7 @@ func TestText(t *testing.T) {
 				},
 			}
 			var buf bytes.Buffer
-			_ = Text(&buf, r, []string{"claude", "codex"})
+			_ = Text(&buf, r, []string{"claude", "codex"}, false)
 			want := "Claude usage\n- 5-hour: 2% (resets in 4h 0m)\n\nCodex usage: Codex token not found\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
@@ -146,7 +147,7 @@ func TestText(t *testing.T) {
 				},
 			}
 			var buf bytes.Buffer
-			_ = Text(&buf, r, []string{"claude"})
+			_ = Text(&buf, r, []string{"claude"}, false)
 			want := "Claude usage\n- 5-hour: 2% (resets in 1h 0m)\n- alpha_extra: 3% (resets in 30m)\n- new_window: 5% (resets in 2h 0m)\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
@@ -167,7 +168,7 @@ func TestText(t *testing.T) {
 				},
 			}
 			var buf bytes.Buffer
-			_ = Text(&buf, r, []string{"claude"})
+			_ = Text(&buf, r, []string{"claude"}, false)
 			want := "Claude usage\n" +
 				"- 5-hour: 2% (resets in 4h 53m)\n" +
 				"- 7-day: 21% (resets in 2d 5h)\n" +
@@ -190,7 +191,7 @@ func TestText(t *testing.T) {
 				},
 			}
 			var buf bytes.Buffer
-			_ = Text(&buf, r, []string{"claude"})
+			_ = Text(&buf, r, []string{"claude"}, false)
 			want := "Claude usage\n- 5-hour: 2% (resets in 1h 0m)\n- 7-day fable 5: 15% (resets in 2h 0m)\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
@@ -208,7 +209,7 @@ func TestText(t *testing.T) {
 				},
 			}
 			var buf bytes.Buffer
-			_ = Text(&buf, r, []string{"claude"})
+			_ = Text(&buf, r, []string{"claude"}, false)
 			want := "Claude usage\n- 5-hour: 2% (resets in 1h 0m)\n- window_1234s: 9% (resets in 1m)\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
@@ -224,7 +225,7 @@ func TestText(t *testing.T) {
 				},
 			}
 			var buf bytes.Buffer
-			_ = Text(&buf, r, []string{"claude", "codex", "copilot"})
+			_ = Text(&buf, r, []string{"claude", "codex", "copilot"}, false)
 			s := buf.String()
 			for _, want := range []string{"Claude usage", "Codex usage", "Copilot usage"} {
 				if !strings.Contains(s, want) {
@@ -250,7 +251,7 @@ func TestText(t *testing.T) {
 				},
 			}
 			var buf bytes.Buffer
-			_ = Text(&buf, r, []string{"claude"})
+			_ = Text(&buf, r, []string{"claude"}, false)
 			want := "Claude usage\n- me@example.com (active) [Pro]\n  - 5-hour: 34% (resets in 4h 53m)\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
@@ -286,7 +287,7 @@ func TestText(t *testing.T) {
 				},
 			}
 			var buf bytes.Buffer
-			_ = Text(&buf, r, []string{"claude"})
+			_ = Text(&buf, r, []string{"claude"}, false)
 			want := string(testutil.LoadFixture(t, "text-claude-accounts-two.golden"))
 			if buf.String() != want {
 				t.Fatalf("got:\n%s\nwant:\n%s", buf.String(), want)
@@ -310,7 +311,7 @@ func TestText(t *testing.T) {
 				},
 			}
 			var buf bytes.Buffer
-			_ = Text(&buf, r, []string{"claude"})
+			_ = Text(&buf, r, []string{"claude"}, false)
 			want := "Claude usage\n- (live Claude account) (active)\n  - 5-hour: 50% (resets in 30m)\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
@@ -331,7 +332,7 @@ func TestText(t *testing.T) {
 				},
 			}
 			var buf bytes.Buffer
-			_ = Text(&buf, r, []string{"claude"})
+			_ = Text(&buf, r, []string{"claude"}, false)
 			want := "Claude usage\n- err@example.com (active) [Pro]: usage fetch timed out\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
@@ -349,7 +350,7 @@ func TestText(t *testing.T) {
 				}},
 			}}
 			var buf bytes.Buffer
-			testutil.WantNoErr(t, Text(&buf, r, []string{"claude"}))
+			testutil.WantNoErr(t, Text(&buf, r, []string{"claude"}, false))
 			const want = "Claude usage\n" +
 				"- team@example.com (active) [Raven] (Acme, team)\n" +
 				"- me@example.com (active) [Max 5x] (personal)\n" +
@@ -378,7 +379,7 @@ func TestText(t *testing.T) {
 				},
 			}
 			var buf bytes.Buffer
-			_ = Text(&buf, r, []string{"claude"})
+			_ = Text(&buf, r, []string{"claude"}, false)
 			want := "Claude usage\n- x@example.com (active) [default_claude_enterprise]\n  - 5-hour: 1% (resets in 1m)\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
@@ -401,7 +402,7 @@ func TestText(t *testing.T) {
 				},
 			}
 			var buf bytes.Buffer
-			_ = Text(&buf, r, []string{"codex"})
+			_ = Text(&buf, r, []string{"codex"}, false)
 			want := "Codex usage\n- me@example.com (active)\n  - 5-hour: 34% (resets in 4h 53m)\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
@@ -433,7 +434,7 @@ func TestText(t *testing.T) {
 				},
 			}
 			var buf bytes.Buffer
-			_ = Text(&buf, r, []string{"codex"})
+			_ = Text(&buf, r, []string{"codex"}, false)
 			want := string(testutil.LoadFixture(t, "text-codex-accounts-two.golden"))
 			if buf.String() != want {
 				t.Fatalf("got:\n%s\nwant:\n%s", buf.String(), want)
@@ -457,7 +458,7 @@ func TestText(t *testing.T) {
 				},
 			}
 			var buf bytes.Buffer
-			_ = Text(&buf, r, []string{"codex"})
+			_ = Text(&buf, r, []string{"codex"}, false)
 			want := "Codex usage\n- (live Codex account) (active)\n  - 5-hour: 50% (resets in 30m)\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
@@ -482,7 +483,7 @@ func TestText(t *testing.T) {
 				},
 			}
 			var buf bytes.Buffer
-			_ = Text(&buf, r, []string{"claude"})
+			_ = Text(&buf, r, []string{"claude"}, false)
 			want := "Claude usage\n- me@example.com (active) [Max 5x]\n  - 5-hour: 2% (resets in 4h 53m)\n  - 7-day fable: 44% (resets in 1d 10h)\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
@@ -501,7 +502,7 @@ func TestText(t *testing.T) {
 				},
 			}
 			var buf bytes.Buffer
-			_ = Text(&buf, r, []string{"codex"})
+			_ = Text(&buf, r, []string{"codex"}, false)
 			want := "Codex usage\n- err@example.com (active): usage fetch timed out\n"
 			if buf.String() != want {
 				t.Fatalf("got %q want %q", buf.String(), want)
@@ -558,7 +559,7 @@ func TestTextWatchers(t *testing.T) {
 			// CheckedAt predates the read by an hour: ages must come from ReadAt.
 			r := providers.Report{CheckedAt: checked.Add(-time.Hour), Providers: map[string]providers.ProviderResult{"claude": tt.result}}
 			var buf bytes.Buffer
-			testutil.WantNoErr(t, Text(&buf, r, []string{"claude"}))
+			testutil.WantNoErr(t, Text(&buf, r, []string{"claude"}, false))
 			if buf.String() != tt.want {
 				t.Fatalf("got %q want %q", buf.String(), tt.want)
 			}
@@ -617,10 +618,70 @@ func TestFormatPercent(t *testing.T) {
 // genuinely fractional and the decimal must survive rendering (issue #29).
 func TestFormatLimitLineFractional(t *testing.T) {
 	t.Run("copilot fraction preserved", func(t *testing.T) {
-		got := formatLimitLine("month", mkLimit(73.4, 5*86400))
+		got := formatLimitLine("month", mkLimit(73.4, 5*86400), false)
 		want := "- month: 73.4% (resets in 5d 0h)"
 		if got != want {
 			t.Errorf("formatLimitLine = %q, want %q", got, want)
+		}
+	})
+}
+
+// TestTextColor covers the whole point of in-renderer color: usage percentages
+// are wrapped, and the watcher threshold line is not. A post-hoc regex over
+// rendered output paints both, which is the bug this replaces.
+func TestTextColor(t *testing.T) {
+	checked := time.Date(2026, 9, 10, 21, 5, 27, 0, time.UTC)
+	five, weekly := 85.0, 95.0
+	// A dedicated report rather than an existing fixture: the shared ones top out
+	// at 90% and would not reach the dark-red branch, and editing one would churn
+	// a golden whose job is to prove color-off output never moved.
+	r := providers.Report{
+		CheckedAt: checked,
+		Providers: map[string]providers.ProviderResult{"claude": {
+			Accounts: []providers.AccountResult{
+				{Email: "calm@example.com", Active: true, Limits: map[string]providers.Limit{
+					"five_hour": mkLimit(10, 3600), "seven_day": mkLimit(72, 5*86400),
+				}},
+				{Email: "hot@example.com", Limits: map[string]providers.Limit{
+					"five_hour": mkLimit(90, 600), "seven_day": mkLimit(100, 2*86400),
+				}},
+			},
+			Watchers: []providers.WatcherView{{
+				PID: 111, IntervalSecs: 300, LastTick: checked.Add(-7 * time.Second), ReadAt: checked,
+				Thresholds: watchstate.Thresholds{FiveHour: &five, Weekly: &weekly},
+			}},
+		}},
+	}
+
+	t.Run("color on wraps only usage percentages", func(t *testing.T) {
+		var buf bytes.Buffer
+		testutil.WantNoErr(t, Text(&buf, r, []string{"claude"}, true))
+		want := string(testutil.LoadFixture(t, "text-color-sample.golden"))
+		if buf.String() != want {
+			t.Fatalf("got %q want %q", buf.String(), want)
+		}
+	})
+
+	t.Run("watcher thresholds are never colored", func(t *testing.T) {
+		var buf bytes.Buffer
+		testutil.WantNoErr(t, Text(&buf, r, []string{"claude"}, true))
+		for _, line := range strings.Split(buf.String(), "\n") {
+			if strings.Contains(line, "auto-switch:") && strings.Contains(line, "\x1b") {
+				t.Errorf("watcher line carries an escape: %q", line)
+			}
+		}
+	})
+
+	t.Run("color off differs from color on by escapes alone", func(t *testing.T) {
+		var buf bytes.Buffer
+		testutil.WantNoErr(t, Text(&buf, r, []string{"claude"}, false))
+		// Stripping every escape from the colored golden must reproduce the
+		// uncolored render exactly. A weaker "contains no \x1b" check would pass
+		// even if color mode changed spacing, ordering or rounding.
+		colored := string(testutil.LoadFixture(t, "text-color-sample.golden"))
+		stripped := regexp.MustCompile(`\x1b\[[0-9;]*m`).ReplaceAllString(colored, "")
+		if buf.String() != stripped {
+			t.Fatalf("color-off render = %q, want %q", buf.String(), stripped)
 		}
 	})
 }

@@ -29,8 +29,12 @@ func runUsage(args []string, stdout, stderr io.Writer, g globals) int {
 	fs.Usage = func() {}
 	registerGlobalFlags(fs, &g)
 	fakeFn := registerFakeMode(fs)
-	var refresh bool
+	var refresh, watch bool
 	fs.BoolVar(&refresh, "refresh", false, "")
+	fs.BoolVar(&watch, "watch", false, "")
+	fs.BoolVar(&watch, "w", false, "")
+	var interval int
+	fs.IntVar(&interval, "interval", defaultWatchIntervalSecs, "")
 
 	// First pass: parse any leading flags before the optional provider positional.
 	if err := fs.Parse(args); err != nil {
@@ -39,7 +43,7 @@ func runUsage(args []string, stdout, stderr io.Writer, g globals) int {
 	}
 
 	// After --help/--version check (they may appear after "usage" token).
-	if handled, code := handleGlobals(g, stdout); handled {
+	if handled, code := handleGlobals(g, stdout, stderr); handled {
 		return code
 	}
 
@@ -60,7 +64,7 @@ func runUsage(args []string, stdout, stderr io.Writer, g globals) int {
 	}
 
 	// After --help/--version that may appear after the provider.
-	if handled, code := handleGlobals(g, stdout); handled {
+	if handled, code := handleGlobals(g, stdout, stderr); handled {
 		return code
 	}
 
@@ -75,6 +79,47 @@ func runUsage(args []string, stdout, stderr io.Writer, g globals) int {
 		return int(orchestrate.StatusUsageError)
 	}
 
+	// Detect an explicit --interval by presence, not a value sentinel, so a
+	// nonsensical --interval 0 still hits the floor check below.
+	intervalSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "interval" {
+			intervalSet = true
+		}
+	})
+	if intervalSet && !watch {
+		fmt.Fprintln(stderr, "--interval requires --watch")
+		return int(orchestrate.StatusUsageError)
+	}
+	if watch {
+		// Flag-shape errors first: they are what the user controls. The
+		// environmental check comes last.
+		if !g.Human {
+			fmt.Fprintln(stderr, "aistat: usage --watch requires -h/--human")
+			return int(orchestrate.StatusUsageError)
+		}
+		if refresh {
+			fmt.Fprintln(stderr, "aistat: --refresh cannot be combined with --watch")
+			return int(orchestrate.StatusUsageError)
+		}
+		if interval < 1 {
+			fmt.Fprintln(stderr, "--interval must be at least 1 second")
+			return int(orchestrate.StatusUsageError)
+		}
+		if !isTerminalFn(stdout) {
+			fmt.Fprintln(stderr, "aistat: usage --watch requires a terminal")
+			return int(orchestrate.StatusUsageError)
+		}
+	}
+
+	// handleGlobals has already rejected an invalid mode, so this cannot fail in
+	// practice; report it rather than discarding the error.
+	color, err := resolveColor(g.Color, stdout, os.Getenv)
+	if err != nil {
+		fmt.Fprintln(stderr, err.Error())
+		return int(orchestrate.StatusUsageError)
+	}
+
 	requested := selectedProviders(service)
 
 	serialStderr := httpx.NewConcurrencySafeWriter(stderr)
@@ -83,21 +128,59 @@ func runUsage(args []string, stdout, stderr io.Writer, g globals) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	report, status := orchestrate.Run(ctx, requested, chosen, orchestrate.Options{Debug: orchDebug})
-
-	attachWatchers(&report, requested, stderr, g.Debug)
-
-	var renderErr error
-	if g.Human {
-		renderErr = render.Text(stdout, report, requested)
-	} else {
-		renderErr = render.JSON(stdout, report)
+	run := usageRun{
+		requested: requested,
+		chosen:    chosen,
+		orchDebug: orchDebug,
+		human:     g.Human,
+		color:     color,
+		stderr:    stderr,
+		debug:     g.Debug,
 	}
+
+	if watch {
+		// Per-tick provider failures are visible in the frame and do not decide
+		// the exit code; only a frame that cannot reach the terminal does.
+		if err := runUsageWatch(ctx, stdout, time.Duration(interval)*time.Second, func(w io.Writer) {
+			_, _ = run.render(ctx, w)
+		}); err != nil {
+			fmt.Fprintln(stderr, err.Error())
+			return int(orchestrate.StatusRenderError)
+		}
+		return int(orchestrate.StatusOK)
+	}
+
+	status, renderErr := run.render(ctx, stdout)
 	if renderErr != nil {
 		fmt.Fprintln(stderr, renderErr.Error())
 		return int(orchestrate.StatusRenderError)
 	}
 	return int(status)
+}
+
+// usageRun holds everything one fetch/render round needs. It is built once in
+// runUsage and reused by every watch tick, so the loop cannot drift from the
+// one-shot path.
+type usageRun struct {
+	requested []string
+	chosen    []providers.Provider
+	orchDebug io.Writer // nil unless --debug
+	human     bool
+	color     bool
+	stderr    io.Writer
+	debug     bool
+}
+
+// render runs one fetch/render round into w, returning the orchestrator status
+// and any write/encode error from the renderer. The error is returned rather
+// than printed so each caller decides what it means.
+func (u usageRun) render(ctx context.Context, w io.Writer) (orchestrate.ExitStatus, error) {
+	report, status := orchestrate.Run(ctx, u.requested, u.chosen, orchestrate.Options{Debug: u.orchDebug})
+	attachWatchers(&report, u.requested, u.stderr, u.debug)
+	if u.human {
+		return status, render.Text(w, report, u.requested, u.color)
+	}
+	return status, render.JSON(w, report)
 }
 
 // attachWatchers nests each `switch --watch` heartbeat under every requested

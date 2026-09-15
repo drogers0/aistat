@@ -22,7 +22,12 @@ gives a readable rendering.
 ## Reading usage
 
 Run `aistat usage` for all providers, or `aistat usage <claude|codex|copilot>`
-for one. JSON is the default and is what you should parse.
+for one. JSON is the default and is what you should parse. JSON never carries
+ANSI escapes, so no extra flag is needed; if you ask for `-h` text output, add
+`--color=never` so escapes cannot reach your parser.
+
+Never use `--watch`: it is an interactive redraw loop that only exits on a
+signal, and it refuses to run without a terminal anyway.
 
 **Two output shapes — detect, don't assume.** For each provider under
 `providers.<name>`:

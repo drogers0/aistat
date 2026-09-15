@@ -45,8 +45,9 @@ func formatPlanLabel(tier string) string {
 }
 
 // Text writes the human-readable rendering of report r for the providers in
-// requested (in the given order).
-func Text(w io.Writer, r providers.Report, requested []string) error {
+// requested (in the given order). When color is true, usage percentages carry
+// ANSI escapes; nothing else in the output ever does.
+func Text(w io.Writer, r providers.Report, requested []string, color bool) error {
 	var sections []string
 	for _, id := range requested {
 		result, ok := r.Providers[id]
@@ -57,7 +58,7 @@ func Text(w io.Writer, r providers.Report, requested []string) error {
 		watchers := watcherLines(result.Watchers)
 
 		if len(result.Accounts) > 0 {
-			sections = append(sections, renderAccountsSection(title, id, result.Accounts, watchers))
+			sections = append(sections, renderAccountsSection(title, id, result.Accounts, watchers, color))
 			continue
 		}
 
@@ -85,7 +86,7 @@ func Text(w io.Writer, r providers.Report, requested []string) error {
 				continue
 			}
 			seen[kl.Key] = true
-			lines = append(lines, formatLimitLine(kl.Label, limit))
+			lines = append(lines, formatLimitLine(kl.Label, limit, color))
 		}
 		var unknown []string
 		for k := range result.Limits {
@@ -95,7 +96,7 @@ func Text(w io.Writer, r providers.Report, requested []string) error {
 		}
 		sort.Strings(unknown)
 		for _, k := range unknown {
-			lines = append(lines, formatLimitLine(humanizeWindowKey(k), result.Limits[k]))
+			lines = append(lines, formatLimitLine(humanizeWindowKey(k), result.Limits[k], color))
 		}
 		sections = append(sections, strings.Join(lines, "\n"))
 	}
@@ -157,7 +158,7 @@ func formatAgo(now, t time.Time) string {
 // renderAccountsSection builds the nested text section for a provider whose
 // ProviderResult has a non-empty Accounts slice (D4). The renderer trusts the
 // caller's ordering — active-first, email-asc is the orchestrator's job.
-func renderAccountsSection(title, providerID string, accts []providers.AccountResult, watchers []string) string {
+func renderAccountsSection(title, providerID string, accts []providers.AccountResult, watchers []string, color bool) string {
 	lines := append([]string{title}, watchers...)
 	known := textLabels[providerID]
 	for _, ar := range accts {
@@ -186,7 +187,7 @@ func renderAccountsSection(title, providerID string, accts []providers.AccountRe
 				continue
 			}
 			seen[kl.Key] = true
-			lines = append(lines, "  "+formatLimitLine(kl.Label, limit))
+			lines = append(lines, "  "+formatLimitLine(kl.Label, limit, color))
 		}
 		var unknownKeys []string
 		for k := range ar.Limits {
@@ -196,7 +197,7 @@ func renderAccountsSection(title, providerID string, accts []providers.AccountRe
 		}
 		sort.Strings(unknownKeys)
 		for _, k := range unknownKeys {
-			lines = append(lines, "  "+formatLimitLine(humanizeWindowKey(k), ar.Limits[k]))
+			lines = append(lines, "  "+formatLimitLine(humanizeWindowKey(k), ar.Limits[k], color))
 		}
 	}
 	return strings.Join(lines, "\n")
@@ -234,8 +235,8 @@ func humanizeWindowKey(key string) string {
 	return key
 }
 
-func formatLimitLine(label string, l providers.Limit) string {
-	return fmt.Sprintf("- %s: %s%% (resets in %s)", label, formatPercent(l.UsedPercent), formatResetDuration(l.ResetAfterSeconds))
+func formatLimitLine(label string, l providers.Limit, color bool) string {
+	return fmt.Sprintf("- %s: %s (resets in %s)", label, colorPercent(l.UsedPercent, color), formatResetDuration(l.ResetAfterSeconds))
 }
 
 // formatPercent renders a usage percentage at one-decimal precision but drops a
