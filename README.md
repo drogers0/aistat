@@ -106,6 +106,7 @@ go install github.com/drogers0/aistat/v2/cmd/aistat@latest
 ```bash
 aistat                                 # default: same as `aistat usage`
 aistat usage [provider]                # report usage for all providers, or one (claude | codex | copilot)
+aistat -h --watch [--interval N]       # live view: redraw on a timer (default 15s; needs -h and a terminal)
 aistat switch                          # bulk: auto-switch every provider with ≥2 stored accounts to its freshest
 aistat switch <provider>               # switch one provider to the account with the most headroom
 aistat switch <provider> --to <id>     # switch by address, unique organization slug, email substring, or UUID prefix
@@ -117,7 +118,7 @@ aistat accounts remove <id> [provider] # remove by address, unique organization 
 
 Switch and accounts work across Claude and Codex; Copilot is single-account (usage-only). `--to` can omit the provider when the id matches exactly one provider's store. A full printed address is the canonical selector when several Claude contexts share an email.
 
-Flags: `-h`/`--human` for text rendering (affects `usage` and `accounts list`), `--refresh` to bypass the per-account usage cache (~90 s TTL, affects `usage` only), `--debug` for per-request diagnostics on stderr, `--version` and `--help` for the obvious.
+Flags: `-h`/`--human` for text rendering (affects `usage` and `accounts list`), `--color=auto|always|never` for ANSI color on `-h` output (default auto: on at a terminal, off when piped; also honors `CLICOLOR_FORCE`, `NO_COLOR` and `TERM=dumb`), `--refresh` to bypass the per-account usage cache (~90 s TTL, affects `usage` only), `--watch`/`-w` and `--interval` for the live view (`usage` only), `--debug` for per-request diagnostics on stderr, `--version` and `--help` for the obvious.
 
 ## Multiple accounts
 

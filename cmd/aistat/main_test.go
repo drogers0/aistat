@@ -335,3 +335,66 @@ func TestCLIAccounts(t *testing.T) {
 		t.Run(tt.name, tt.run)
 	}
 }
+
+// TestScanGlobalsColor covers the value-taking global added for --color. The
+// two-token form is the reason scanGlobals has to consume the value at all:
+// left to the subcommand FlagSet, `aistat --color never usage` would take
+// "never" as the subcommand under the first-non-flag rule.
+func TestScanGlobalsColor(t *testing.T) {
+	tests := []struct {
+		name      string
+		args      []string
+		wantColor string
+		wantSub   string
+		wantRest  []string
+		wantErr   string
+	}{
+		{name: "equals form", args: []string{"--color=never", "usage"}, wantColor: "never", wantSub: "usage"},
+		{name: "two-token form", args: []string{"--color", "never", "usage"}, wantColor: "never", wantSub: "usage"},
+		{name: "two-token form does not eat the subcommand", args: []string{"--color", "always"}, wantColor: "always"},
+		{name: "empty value is allowed and means auto", args: []string{"--color=", "usage"}, wantColor: "", wantSub: "usage"},
+		{name: "value may look like a flag", args: []string{"--color", "-h"}, wantColor: "-h"},
+		{name: "missing value errors", args: []string{"--color"}, wantErr: "flag needs an argument: --color"},
+		{name: "boolean =value rejection is unchanged", args: []string{"--human=true"}, wantErr: "--flag=value form not supported for global flags; use `--human`"},
+		{name: "color after the subcommand is left for the FlagSet", args: []string{"usage", "--color=never"}, wantSub: "usage", wantRest: []string{"--color=never"}},
+		// A value-taking flag that is NOT a global still has to be recognized, or
+		// its value is mistaken for the subcommand. --interval is the first such
+		// flag reachable before a subcommand token (usage is the default verb).
+		{name: "non-global value flag passes through with its value", args: []string{"-h", "--watch", "--interval", "15"},
+			wantRest: []string{"--watch", "--interval", "15"}},
+		{name: "non-global value flag in equals form passes through", args: []string{"-h", "--interval=15"},
+			wantRest: []string{"--interval=15"}},
+		{name: "switch value flags do not swallow their subcommand", args: []string{"--to", "alice", "switch"},
+			wantSub: "switch", wantRest: []string{"--to", "alice"}},
+		{name: "threshold flags take a value", args: []string{"--if-above-5h", "90", "switch"},
+			wantSub: "switch", wantRest: []string{"--if-above-5h", "90"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g, sub, rest, err := scanGlobals(tt.args)
+			if tt.wantErr != "" {
+				if err == nil || err.Error() != tt.wantErr {
+					t.Fatalf("error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if g.Color != tt.wantColor {
+				t.Errorf("Color = %q, want %q", g.Color, tt.wantColor)
+			}
+			if sub != tt.wantSub {
+				t.Errorf("sub = %q, want %q", sub, tt.wantSub)
+			}
+			if len(rest) != len(tt.wantRest) {
+				t.Fatalf("rest = %v, want %v", rest, tt.wantRest)
+			}
+			for i := range rest {
+				if rest[i] != tt.wantRest[i] {
+					t.Errorf("rest[%d] = %q, want %q", i, rest[i], tt.wantRest[i])
+				}
+			}
+		})
+	}
+}

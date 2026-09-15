@@ -134,7 +134,7 @@ func TestParity(t *testing.T) {
 			)
 
 			var buf bytes.Buffer
-			testutil.WantNoErr(t, render.Text(&buf, report, []string{"claude", "codex", "copilot"}))
+			testutil.WantNoErr(t, render.Text(&buf, report, []string{"claude", "codex", "copilot"}, false))
 			want := string(testutil.LoadFixture(t, "text_contract.golden"))
 			if buf.String() != want {
 				t.Errorf("text contract drift:\ngot:\n%s\nwant:\n%s", buf.String(), want)
