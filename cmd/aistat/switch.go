@@ -19,6 +19,7 @@ import (
 	"github.com/drogers0/aistat/v2/internal/providers"
 	"github.com/drogers0/aistat/v2/internal/providers/claude"
 	codex "github.com/drogers0/aistat/v2/internal/providers/codex"
+	"github.com/drogers0/aistat/v2/internal/watchstate"
 )
 
 // switchable is the minimal interface that both claude.Client and codex.Client satisfy.
@@ -420,9 +421,31 @@ func runSwitch(args []string, stdout, stderr io.Writer, g globals) int {
 		}
 		fmt.Fprintf(stdout, "watching %s every %ds (5h %s, weekly %s)\n",
 			providerDesc, interval, watchThresholdDisplay(opts.th.FiveHour), watchThresholdDisplay(opts.th.Weekly))
+
+		// Publish this watcher's state so `aistat usage` can report it. Best-effort:
+		// a heartbeat that cannot be written must never stop the daemon switching.
+		hb := newHeartbeat(handles, providerArg, interval, opts.th)
+		if err := watchstate.Supersede(hb, time.Now()); err != nil {
+			fmt.Fprintf(stderr, "aistat: %s\n", err)
+		}
+		publish := func() {
+			hb.LastTick = time.Now()
+			if err := watchstate.Publish(hb); err != nil {
+				fmt.Fprintf(stderr, "aistat: %s\n", err)
+			}
+		}
+		// Publishing on both sides of the tick bounds every heartbeat gap by one
+		// sleep or one tick, which is what watchstate.Stale assumes.
 		watchLoop(ctx, time.Duration(interval)*time.Second, func() {
+			publish()
 			_ = routeConditional(ctx, handles, providerArg, opts, stdout, stderr, debugW)
+			publish()
 		}, watchSleepFn)
+		// watchLoop returns only on SIGTERM/Ctrl+C. A killed watcher leaves its
+		// file behind and readers see it go stale.
+		if err := watchstate.Clear(hb.PID); err != nil {
+			fmt.Fprintf(stderr, "aistat: %s\n", err)
+		}
 		return 0
 	}
 

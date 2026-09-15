@@ -169,6 +169,8 @@ Threshold flags cannot be combined with `--to` (a usage error, exit 2). Like unc
 
 Add `--watch` (or `-w`) to run the conditional switch on a timer, in the foreground. `--watch` always notifies, with **in-memory notification dedup** so a persistent "no better account" state warns you once, not on every tick. It ticks immediately on startup, then every `--interval` seconds (default 300, minimum 60). `--watch` implies conditional mode; with no threshold flag the windows fall back to the env vars / defaults above. You keep it alive with your OS's own service manager — it's a long-running foreground loop.
 
+While a watcher runs, `aistat usage` shows it under each provider it covers, with its thresholds and when it last checked; a watcher that stops ticking shows as `STALE` with its pid.
+
 ```
 aistat switch --watch                                 # all providers with ≥2 stored accounts, env/default thresholds
 aistat switch claude --watch --interval 120           # claude only, checked every 2 minutes
@@ -309,7 +311,7 @@ The exit code and stdout payload are unaffected — these are heads-ups that the
 }
 ```
 
-Claude and Codex both use the `accounts` view — an array of per-account rows (even with a single stored account), where the row with `active: true` carries the live account's limits. Claude canonical rows may also carry `address`, `organization_name`, and `organization_type`; these fields are additive and omitted for Codex and live-unstored rows. Copilot stays single-account: it emits a top-level `limits` and no `accounts`. Every `Limit` has the same four fields: `used_percent`, `remaining_percent`, `resets_at` (ISO 8601), `reset_after_seconds`. `aistat accounts list` prints the canonical Claude address and the UUID display field. Use the printed address to select a same-email context, or use a unique organization slug, email substring, or UUID prefix with `switch --to` and `accounts remove`.
+Claude and Codex both use the `accounts` view — an array of per-account rows (even with a single stored account), where the row with `active: true` carries the live account's limits. Claude canonical rows may also carry `address`, `organization_name`, and `organization_type`; these fields are additive and omitted for Codex and live-unstored rows. Copilot stays single-account: it emits a top-level `limits` and no `accounts`. A provider covered by `switch --watch` also carries a `watchers` array (omitted when none): `pid`, `interval_seconds`, `thresholds` (`five_hour` / `weekly`, `null` = off) and `last_tick`, where a `last_tick` older than 1.2 × `interval_seconds` means the watcher is presumed dead. Every `Limit` has the same four fields: `used_percent`, `remaining_percent`, `resets_at` (ISO 8601), `reset_after_seconds`. `aistat accounts list` prints the canonical Claude address and the UUID display field. Use the printed address to select a same-email context, or use a unique organization slug, email substring, or UUID prefix with `switch --to` and `accounts remove`.
 
 </details>
 

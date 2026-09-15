@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/drogers0/aistat/v2/internal/watchstate"
 )
 
 func TestLimitMarshalJSON(t *testing.T) {
@@ -240,5 +242,39 @@ func TestProviderResult_LimitsAlwaysEmitted(t *testing.T) {
 	b, _ = json.Marshal(ProviderResult{Limits: map[string]Limit{"x": {ResetsAt: at}}})
 	if strings.Contains(string(b), `"error"`) {
 		t.Fatalf("empty error should be omitted: %s", string(b))
+	}
+}
+
+func TestWatchersJSON(t *testing.T) {
+	five := 85.0
+	w := WatcherView{
+		PID:          12345,
+		IntervalSecs: 300,
+		Thresholds:   watchstate.Thresholds{FiveHour: &five},
+		LastTick:     time.Date(2026, 9, 10, 17, 5, 20, 0, time.FixedZone("EDT", -4*3600)),
+		ReadAt:       time.Now(), // never serialized
+	}
+	const wantWatcher = `{"pid":12345,"interval_seconds":300,"thresholds":{"five_hour":85,"weekly":null},"last_tick":"2026-09-10T21:05:20+00:00"}`
+	tests := []struct {
+		name   string
+		result ProviderResult
+		want   string
+	}{
+		{"accounts branch carries watchers", ProviderResult{Accounts: []AccountResult{{Email: "a@example.com"}}, Watchers: []WatcherView{w}},
+			`{"accounts":[{"email":"a@example.com","plan":"","active":false,"limits":null}],"watchers":[` + wantWatcher + `]}`},
+		{"flat branch carries watchers", ProviderResult{Limits: map[string]Limit{}, Watchers: []WatcherView{w}},
+			`{"limits":{},"watchers":[` + wantWatcher + `]}`},
+		{"no watchers omits the key", ProviderResult{Limits: map[string]Limit{}}, `{"limits":{}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b, err := json.Marshal(tt.result)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if string(b) != tt.want {
+				t.Fatalf("got  %s\nwant %s", b, tt.want)
+			}
+		})
 	}
 }

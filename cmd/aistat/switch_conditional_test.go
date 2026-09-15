@@ -15,6 +15,7 @@ import (
 	"github.com/drogers0/aistat/v2/internal/providers"
 	"github.com/drogers0/aistat/v2/internal/providers/claude"
 	"github.com/drogers0/aistat/v2/internal/testutil"
+	"github.com/drogers0/aistat/v2/internal/watchstate"
 )
 
 func th(fiveHour, weekly float64, fiveOff, weeklyOff bool) autoswitch.Thresholds {
@@ -662,13 +663,35 @@ func TestSwitchConditional(t *testing.T) {
 			clearThresholdEnv(t)
 			seedTwoAccounts(t)
 			withSwitchClient(t, &stubSwitchClient{})
+			// The tick-start heartbeat is live during the fetch; the one seen in
+			// the following sleep must be republished with a later LastTick.
+			var startup, during []watchstate.Heartbeat
 			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
+				startup, _ = watchstate.List(time.Now())
 				return makeLimitsFull(map[string]float64{"five_hour": 58, "seven_day": 50}), nil
 			})
-			withWatchSleep(t, func(context.Context, time.Duration) error { return context.Canceled })
-			r := runSwitchTest("claude", "--if-above-5h", "85", "--if-above-weekly", "95", "--watch", "--interval", "60")
+			withWatchSleep(t, func(context.Context, time.Duration) error {
+				during, _ = watchstate.List(time.Now())
+				return context.Canceled
+			})
+			// A predecessor with the same scope (e.g. before a launchd restart) is
+			// superseded, so only this watcher's heartbeat is visible.
+			if err := watchstate.Publish(watchstate.Heartbeat{PID: -1, Providers: []string{"claude"}, IntervalSecs: 60, LastTick: time.Now()}); err != nil {
+				t.Fatalf("seed predecessor: %v", err)
+			}
+			r := runSwitchTest("claude", "--if-above-5h", "85", "--if-above-weekly", "off", "--watch", "--interval", "60")
 			wantExit(t, r, 0)
-			wantOut(t, r, "watching claude every 60s (5h ≥ 85%, weekly ≥ 95%)")
+			wantOut(t, r, "watching claude every 60s (5h ≥ 85%, weekly off)")
+			if len(during) != 1 || during[0].IntervalSecs != 60 || !during[0].Covers("claude") ||
+				*during[0].Thresholds.FiveHour != 85 || during[0].Thresholds.Weekly != nil || during[0].LastTick.IsZero() {
+				t.Fatalf("heartbeat during tick = %+v; want one claude watcher at 5h 85, weekly off", during)
+			}
+			if len(startup) != 1 || !during[0].LastTick.After(startup[0].LastTick) {
+				t.Errorf("heartbeat not republished after the tick: startup %+v, after tick %+v", startup, during)
+			}
+			if after, _ := watchstate.List(time.Now()); len(after) != 0 {
+				t.Errorf("heartbeat not cleared on shutdown: %+v", after)
+			}
 			wantOut(t, r, "no switch needed (five_hour at 42%)")
 			if strings.Contains(r.stdout, "[claude]") {
 				t.Errorf("scoped watch should route via runSwitchSingle (no bulk header):\n%s", r.stdout)
@@ -723,10 +746,19 @@ func TestSwitchConditional(t *testing.T) {
 			withFetchLiveUsageFn(t, func(_ string) (map[string]providers.Limit, error) {
 				return makeLimitsFull(map[string]float64{"five_hour": 58, "seven_day": 50}), nil
 			})
-			withWatchSleep(t, func(context.Context, time.Duration) error { return context.Canceled })
+			var during []watchstate.Heartbeat
+			withWatchSleep(t, func(context.Context, time.Duration) error {
+				during, _ = watchstate.List(time.Now())
+				return context.Canceled
+			})
 			r := runSwitchTest("-w", "--if-above-5h", "85", "--if-above-weekly", "95")
 			wantExit(t, r, 0)
 			wantOut(t, r, "watching all providers every 300s")
+			// A bulk watcher's scope is every switchable provider, even one
+			// this tick skipped for having too few accounts.
+			if len(during) != 1 || !during[0].Covers("claude") || !during[0].Covers("codex") {
+				t.Fatalf("bulk heartbeat = %+v; want one watcher covering claude and codex", during)
+			}
 			wantOut(t, r, "[claude]") // bulk header proves the runSwitchBulk path
 			wantOut(t, r, "no switch needed (five_hour at 42%)")
 		}},

@@ -8,6 +8,7 @@ import (
 
 	"github.com/drogers0/aistat/v2/internal/providers"
 	"github.com/drogers0/aistat/v2/internal/testutil"
+	"github.com/drogers0/aistat/v2/internal/watchstate"
 )
 
 func mkLimit(used float64, secs int) providers.Limit {
@@ -509,6 +510,59 @@ func TestText(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.run)
+	}
+}
+
+func TestTextWatchers(t *testing.T) {
+	checked := time.Date(2026, 9, 10, 21, 5, 27, 0, time.UTC)
+	five, weekly := 85.0, 95.0
+	fresh := providers.WatcherView{
+		PID: 111, IntervalSecs: 300, LastTick: checked.Add(-7 * time.Second), ReadAt: checked,
+		Thresholds: watchstate.Thresholds{FiveHour: &five, Weekly: &weekly},
+	}
+	stale := providers.WatcherView{
+		PID: 222, IntervalSecs: 300, LastTick: checked.Add(-14 * time.Minute), ReadAt: checked,
+		Thresholds: watchstate.Thresholds{FiveHour: &five},
+	}
+	offWeekly := fresh
+	offWeekly.Thresholds.Weekly = nil
+	tests := []struct {
+		name   string
+		result providers.ProviderResult
+		want   string
+	}{
+		{"fresh and stale under accounts header",
+			providers.ProviderResult{
+				Accounts: []providers.AccountResult{{Email: "me@example.com", Active: true, Limits: map[string]providers.Limit{"five_hour": mkLimit(47, 1800)}}},
+				Watchers: []providers.WatcherView{fresh, stale},
+			},
+			"Claude usage\n" +
+				"  auto-switch: 5h \u2265 85%, weekly \u2265 95% (checked 7s ago)\n" +
+				"  auto-switch: STALE, last checked 14m ago (pid 222)\n" +
+				"- me@example.com (active)\n  - 5-hour: 47% (resets in 30m)\n"},
+		{"off threshold under flat header",
+			providers.ProviderResult{
+				Limits:   map[string]providers.Limit{"five_hour": mkLimit(47, 1800)},
+				Watchers: []providers.WatcherView{offWeekly},
+			},
+			"Claude usage\n  auto-switch: 5h \u2265 85%, weekly off (checked 7s ago)\n- 5-hour: 47% (resets in 30m)\n"},
+		{"flat fetch error keeps watcher",
+			providers.ProviderResult{Error: "boom", Watchers: []providers.WatcherView{fresh}},
+			"Claude usage: boom\n  auto-switch: 5h \u2265 85%, weekly \u2265 95% (checked 7s ago)\n"},
+		{"no windows keeps watcher",
+			providers.ProviderResult{Limits: map[string]providers.Limit{}, Watchers: []providers.WatcherView{fresh}},
+			"Claude usage\n  auto-switch: 5h \u2265 85%, weekly \u2265 95% (checked 7s ago)\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// CheckedAt predates the read by an hour: ages must come from ReadAt.
+			r := providers.Report{CheckedAt: checked.Add(-time.Hour), Providers: map[string]providers.ProviderResult{"claude": tt.result}}
+			var buf bytes.Buffer
+			testutil.WantNoErr(t, Text(&buf, r, []string{"claude"}))
+			if buf.String() != tt.want {
+				t.Fatalf("got %q want %q", buf.String(), tt.want)
+			}
+		})
 	}
 }
 

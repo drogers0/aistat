@@ -6,8 +6,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/drogers0/aistat/v2/internal/providers"
+	"github.com/drogers0/aistat/v2/internal/watchstate"
 )
 
 // textLabels holds the human-facing label and the display order for every
@@ -52,25 +54,29 @@ func Text(w io.Writer, r providers.Report, requested []string) error {
 			continue
 		}
 		title := providers.Title(id) + " usage"
+		watchers := watcherLines(result.Watchers)
 
 		if len(result.Accounts) > 0 {
-			sections = append(sections, renderAccountsSection(title, id, result.Accounts))
+			sections = append(sections, renderAccountsSection(title, id, result.Accounts, watchers))
 			continue
 		}
 
 		// Legacy flat form: Copilot, or any provider without Accounts populated.
+		// A watcher still shows when the fetch failed or found no windows.
 		if result.Error != "" {
-			sections = append(sections, title+": "+result.Error)
+			sections = append(sections, strings.Join(append([]string{title + ": " + result.Error}, watchers...), "\n"))
 			continue
 		}
 		if len(result.Limits) == 0 {
 			// Success-with-no-windows is distinguishable from failure in JSON
 			// (`"limits": {}` vs `null`); in text mode we suppress the lone
 			// header row rather than emit a section with only a title.
+			if len(watchers) > 0 {
+				sections = append(sections, strings.Join(append([]string{title}, watchers...), "\n"))
+			}
 			continue
 		}
-		var lines []string
-		lines = append(lines, title)
+		lines := append([]string{title}, watchers...)
 		known := textLabels[id]
 		seen := map[string]bool{}
 		for _, kl := range known {
@@ -102,11 +108,57 @@ func Text(w io.Writer, r providers.Report, requested []string) error {
 	return nil
 }
 
+// watcherLines renders one line per watcher covering this provider, indented
+// under the provider title. The guard status belongs next to the accounts it
+// guards, so this is emitted directly beneath the header rather than collected
+// into a section of its own. Returns nil when nothing watches this provider.
+func watcherLines(watchers []providers.WatcherView) []string {
+	var lines []string
+	for _, w := range watchers {
+		if watchstate.Stale(w.LastTick, w.IntervalSecs, w.ReadAt) {
+			// A watcher that missed its ticks may have been killed without
+			// cleanup. Say so, and keep the pid: it is what you need to reap
+			// the process or its leftover state.
+			lines = append(lines, fmt.Sprintf("  auto-switch: STALE, last checked %s ago (pid %d)",
+				formatAgo(w.ReadAt, w.LastTick), w.PID))
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("  auto-switch: 5h %s, weekly %s (checked %s ago)",
+			formatThreshold(w.Thresholds.FiveHour), formatThreshold(w.Thresholds.Weekly),
+			formatAgo(w.ReadAt, w.LastTick)))
+	}
+	return lines
+}
+
+// formatThreshold renders a watcher threshold, where nil means the window is
+// disabled as a trigger.
+func formatThreshold(pct *float64) string {
+	if pct == nil {
+		return "off"
+	}
+	return "\u2265 " + formatPercent(*pct) + "%"
+}
+
+// formatAgo renders a coarse age for a watcher's last tick.
+func formatAgo(now, t time.Time) string {
+	d := now.Sub(t)
+	if d < 0 {
+		d = 0
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+}
+
 // renderAccountsSection builds the nested text section for a provider whose
 // ProviderResult has a non-empty Accounts slice (D4). The renderer trusts the
 // caller's ordering — active-first, email-asc is the orchestrator's job.
-func renderAccountsSection(title, providerID string, accts []providers.AccountResult) string {
-	lines := []string{title}
+func renderAccountsSection(title, providerID string, accts []providers.AccountResult, watchers []string) string {
+	lines := append([]string{title}, watchers...)
 	known := textLabels[providerID]
 	for _, ar := range accts {
 		// "- <email>[ (active)][ [Plan]][ <claude context>]" — see claudeContext
