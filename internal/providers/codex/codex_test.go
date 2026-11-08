@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strconv"
@@ -201,6 +203,7 @@ func buildClient(
 		refresh:          rc,
 		store:            store,
 		readCredential:   readCred,
+		writeLive:        cred.WriteCodexLiveBlob, // safe: HOME is redirected above
 		lookupID:         lookupID,
 		warn:             warnBuf,
 		now:              nowFn,
@@ -1661,5 +1664,37 @@ func TestCodexPostSwitchVerify_RealImplWrapsErrAuthDenied(t *testing.T) {
 	}
 	if strings.HasPrefix(err.Error(), "aistat: codex:") {
 		t.Errorf("PostSwitchVerify must return bare phrase (no 'aistat: codex:' prefix): %q", err.Error())
+	}
+}
+
+func TestFetch_publishesRefreshToLive(t *testing.T) {
+	nearExpirySec := testNow.Add(10 * time.Second).Unix()
+	rotatedAT := accessJWT("tok-a-new", testNow.Add(time.Hour).Unix())
+	refreshSrv := testutil.NewStubServer(t, refreshSuccessBody(rotatedAT, "ref-a-new"), 200, nil)
+	c := buildClient(t, testutil.NewStubServer(t, minUsageBody, 200, nil), refreshSrv, nil, nil, noLookupCall(t), nil, nil)
+
+	// Seed a real ~/.codex/auth.json (buildClient redirected HOME) carrying a
+	// field only the CLI's copy has, so the test proves live.Raw is what gets
+	// rotated, not the store slot.
+	var blob map[string]any
+	_ = json.Unmarshal(rawCodexBlob("tok-a", "ref-a", nearExpirySec), &blob)
+	blob["OPENAI_API_KEY"] = "cli-owned"
+	raw, _ := json.Marshal(blob)
+	home, _ := os.UserHomeDir()
+	testutil.WantNoErr(t, os.MkdirAll(filepath.Join(home, ".codex"), 0o700))
+	testutil.WantNoErr(t, os.WriteFile(filepath.Join(home, ".codex", "auth.json"), raw, 0o600))
+	testutil.WantNoErr(t, c.store.Upsert(context.Background(),
+		makeCodexAccount("uuid-a", "alice@example.com", "tok-a", "ref-a", nearExpirySec)))
+	c.readCredential = cred.ReadCodexCredential
+
+	_, err := c.Fetch(context.Background())
+	testutil.WantNoErr(t, err)
+	live, err := cred.ReadCodexCredential(context.Background())
+	testutil.WantNoErr(t, err)
+	if live.AccessToken != rotatedAT || live.RefreshToken != "ref-a-new" {
+		t.Errorf("auth.json tokens = %q/%q, want rotated", live.AccessToken, live.RefreshToken)
+	}
+	if !strings.Contains(string(live.Raw), `"OPENAI_API_KEY":"cli-owned"`) || extractIDToken(live.Raw) == "" {
+		t.Errorf("auth.json lost CLI-owned fields: %s", live.Raw)
 	}
 }

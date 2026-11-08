@@ -157,6 +157,7 @@ func buildClient(
 		refresh:          rc,
 		store:            store,
 		readCredential:   readCred,
+		writeLive:        func(context.Context, []byte) error { return nil }, // never the real keychain writer
 		warn:             warnBuf,
 		now:              nowFn,
 		baseTimeout:      10 * time.Second,
@@ -2178,5 +2179,48 @@ func TestNew(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.run)
+	}
+}
+
+func TestFetch_publishesRefreshToLive(t *testing.T) {
+	nearExpiry := testNow.Add(5 * time.Second).UnixMilli()
+	tests := []struct {
+		name       string
+		cliRotates bool // Claude Code refreshes while aistat's exchange is in flight
+		wantWrites int
+	}{
+		{"live holds the spent token: rotated blob published", false, 1},
+		{"live changed mid-flight: not overwritten", true, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var live atomic.Pointer[cred.Credential]
+			live.Store(makeCred("tok-a", "ref-a", nearExpiry))
+			refreshSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if tc.cliRotates {
+					live.Store(makeCred("tok-cli", "ref-cli", nearExpiry))
+				}
+				_, _ = w.Write(refreshSuccessBody("tok-a2", "ref-a2"))
+			}))
+			t.Cleanup(refreshSrv.Close)
+			store := testutil.MemStore(t, makeAccount("uuid-a", "a@example.com", "tok-a", "ref-a", nearExpiry))
+			c := buildClient(t, testutil.NewStubServer(t, minUsageBody, 200, nil), testutil.RejectServer(t, "profile"),
+				refreshSrv, live.Load(), store, nil, nil)
+			c.readCredential = func(context.Context) (cred.Credential, error) { return *live.Load(), nil }
+			var writes []accounts.Account
+			c.writeLive = func(_ context.Context, blob []byte) error {
+				writes = append(writes, accounts.Account{RawBlob: blob})
+				return nil
+			}
+
+			_, err := c.Fetch(context.Background())
+			testutil.WantNoErr(t, err)
+			if len(writes) != tc.wantWrites {
+				t.Fatalf("live writes = %d, want %d", len(writes), tc.wantWrites)
+			}
+			if tc.wantWrites == 1 && (StoredAccessToken(writes[0]) != "tok-a2" || StoredRefreshToken(writes[0]) != "ref-a2") {
+				t.Errorf("published blob = %s, want tok-a2/ref-a2", writes[0].RawBlob)
+			}
+		})
 	}
 }
