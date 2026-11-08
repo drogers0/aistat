@@ -52,6 +52,7 @@ type Client struct {
 	refresh          *refreshClient
 	store            accounts.Store
 	readCredential   func(ctx context.Context) (cred.Credential, error)
+	writeLive        func(ctx context.Context, rawBlob []byte) error
 	warn             io.Writer // receives per-run warn lines; defaults to os.Stderr in New
 	now              func() time.Time
 	baseTimeout      time.Duration
@@ -100,6 +101,7 @@ func New(debug io.Writer, userAgent string, opts ...Option) *Client {
 		refresh:          newRefreshClient(doer),
 		store:            accounts.NewMemoryStore(),
 		readCredential:   cred.ReadClaudeCredential,
+		writeLive:        cred.WriteClaudeLiveBlob,
 		warn:             os.Stderr,
 		now:              time.Now,
 		baseTimeout:      baseTimeout,
@@ -363,6 +365,25 @@ func (c *Client) logCacheHit(key string, age time.Duration) {
 	c.debugf("usage cache hit for %s (age %ds)", key, int(age.Seconds()))
 }
 
+// publishRefresh writes a refresh back to the live credential when the live
+// credential still holds the refresh token aistat just spent. Refresh tokens
+// are single-use, so without this Claude Code is left holding a dead one. A
+// changed or missing live credential is newer than ours and is left alone.
+// The live blob itself is rotated so every field the CLI owns survives.
+func (c *Client) publishRefresh(ctx context.Context, spent string, tok Token) error {
+	live, err := c.readLiveCredential(ctx)
+	if err != nil || live == nil || live.RefreshToken != spent {
+		return err
+	}
+	blob, err := rotateRawBlob(live.Raw, tok)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, credTimeout)
+	defer cancel()
+	return c.writeLive(ctx, blob)
+}
+
 // rotateRawBlob returns a copy of rawBlob with claudeAiOauth.accessToken,
 // refreshToken, and expiresAt replaced by the values from tok. Unknown fields
 // are preserved via map[string]any round-trip so future Anthropic additions
@@ -506,10 +527,11 @@ func (c *Client) ReconcileAndPersist(ctx context.Context) error {
 }
 
 // Fetch implements providers.Provider. It reads the live credential, reconciles
-// it against the multi-account store, optionally refreshes near-expiry tokens,
-// fetches usage for each account sequentially, and returns a ProviderOutput
-// with per-account detail in Accounts and the active account's limits in Limits
-// (active-account compatibility projection per D3).
+// it against the multi-account store, optionally refreshes near-expiry tokens
+// (publishing each refresh to the live credential while it still holds the
+// spent refresh token), fetches usage for each account sequentially, and
+// returns a ProviderOutput with per-account detail in Accounts and the active
+// account's limits in Limits (active-account compatibility projection per D3).
 //
 // Timeout budget: baseTimeout + len(accounts) × perAccountBudget, applied as a
 // single pool over the per-account loop. A slow first account can starve later
@@ -575,7 +597,8 @@ func (c *Client) Fetch(ctx context.Context) (providers.ProviderOutput, error) {
 		// Refresh if the token is near expiry (ExpiresAt present and within skew).
 		now := c.now()
 		if StoredExpiresAt(acct) > 0 && StoredExpiresAt(acct) < now.Add(refreshSkew).UnixMilli() {
-			tok, refreshErr := c.refresh.Exchange(poolCtx, StoredRefreshToken(acct))
+			spent := StoredRefreshToken(acct)
+			tok, refreshErr := c.refresh.Exchange(poolCtx, spent)
 			if refreshErr != nil {
 				ar.Error = refreshErrorMessage(refreshErr)
 				if errors.Is(refreshErr, providers.ErrTransient) {
@@ -584,11 +607,18 @@ func (c *Client) Fetch(ctx context.Context) (providers.ProviderOutput, error) {
 				accountResults = append(accountResults, ar)
 				continue
 			}
-			// Persist rotated tokens. rotateRawBlob preserves unknown fields via
-			// map[string]any round-trip so future Anthropic additions survive rotation.
+			// The spent refresh token is dead server-side now, so finish persisting
+			// the rotated pair even if the run is being cancelled.
+			persistCtx := context.WithoutCancel(poolCtx)
+			if err := c.publishRefresh(persistCtx, spent, tok); err != nil {
+				c.warnf("aistat: claude: could not save refreshed token to the live credential (%s); run `claude /login` if Claude Code reports an expired session\n", err)
+			}
+			// rotateRawBlob preserves unknown fields via map[string]any round-trip.
 			if newBlob, blobErr := rotateRawBlob(acct.RawBlob, tok); blobErr == nil {
 				acct.RawBlob = newBlob
-				_ = c.store.Upsert(poolCtx, acct)
+				upsertCtx, cancel := context.WithTimeout(persistCtx, credTimeout)
+				_ = c.store.Upsert(upsertCtx, acct)
+				cancel()
 			}
 		}
 

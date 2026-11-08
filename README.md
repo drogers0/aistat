@@ -126,7 +126,7 @@ Whichever account is active when you call `aistat` gets stored automatically. Af
 
 `aistat accounts list` shows every stored account, `aistat accounts remove <id>` deletes one (the currently-active account is protected — switch away with `aistat switch --to <address>` or run logout first).
 
-`aistat switch` is the only command that changes which account is live; `aistat usage` never writes a live credential, though it does update the stored accounts and the usage cache.
+`aistat switch` is the only command that changes which account is live. `aistat usage` updates the stored accounts and the usage cache, and writes the live credential only to save a token refresh for the account that is already live (refresh tokens are single-use, so otherwise Claude Code or the Codex CLI would be left with a spent one).
 
 ### aistat switch
 
@@ -326,7 +326,7 @@ cp -r skills/aistat ~/.claude/skills/          # user-wide
 cp -r skills/aistat <your-repo>/.claude/skills/
 ```
 
-The skill auto-runs only the read-only `aistat usage` and `aistat accounts list` commands. Anything that mutates the live credential — `aistat switch` — is intentionally left out of its allowed tools, so it still requires your approval.
+The skill auto-runs only the `aistat usage` and `aistat accounts list` commands. Anything that changes which account is live — `aistat switch` — is intentionally left out of its allowed tools, so it still requires your approval.
 
 ## Contributing
 
