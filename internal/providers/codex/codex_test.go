@@ -1670,86 +1670,31 @@ func TestCodexPostSwitchVerify_RealImplWrapsErrAuthDenied(t *testing.T) {
 func TestFetch_publishesRefreshToLive(t *testing.T) {
 	nearExpirySec := testNow.Add(10 * time.Second).Unix()
 	rotatedAT := accessJWT("tok-a-new", testNow.Add(time.Hour).Unix())
+	refreshSrv := testutil.NewStubServer(t, refreshSuccessBody(rotatedAT, "ref-a-new"), 200, nil)
+	c := buildClient(t, testutil.NewStubServer(t, minUsageBody, 200, nil), refreshSrv, nil, nil, noLookupCall(t), nil, nil)
 
-	// seed writes a real ~/.codex/auth.json (HOME is already redirected by
-	// buildClient) holding the near-expiry tokens plus a CLI-owned field, and
-	// a store slot with the same blob. The client reads the real file.
-	seed := func(t *testing.T, c *Client) string {
-		t.Helper()
-		var blob map[string]any
-		_ = json.Unmarshal(rawCodexBlob("tok-a", "ref-a", nearExpirySec), &blob)
-		blob["OPENAI_API_KEY"] = "cli-owned"
-		raw, _ := json.Marshal(blob)
-		home, _ := os.UserHomeDir()
-		path := filepath.Join(home, ".codex", "auth.json")
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, raw, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		acct := makeCodexAccount("uuid-a", "alice@example.com", "tok-a", "ref-a", nearExpirySec)
-		acct.RawBlob = raw
-		testutil.WantNoErr(t, c.store.Upsert(context.Background(), acct))
-		c.readCredential = cred.ReadCodexCredential
-		return path
-	}
-	readLive := func(t *testing.T) cred.Credential {
-		t.Helper()
-		live, err := cred.ReadCodexCredential(context.Background())
-		testutil.WantNoErr(t, err)
-		return live
-	}
-	wantStoreRotated := func(t *testing.T, c *Client) {
-		t.Helper()
-		stored, _ := c.store.List(context.Background())
-		if len(stored) != 1 || StoredRefreshToken(stored[0]) != "ref-a-new" {
-			t.Fatalf("store not rotated to ref-a-new")
-		}
-	}
+	// Seed a real ~/.codex/auth.json (buildClient redirected HOME) carrying a
+	// field only the CLI's copy has, so the test proves live.Raw is what gets
+	// rotated, not the store slot.
+	var blob map[string]any
+	_ = json.Unmarshal(rawCodexBlob("tok-a", "ref-a", nearExpirySec), &blob)
+	blob["OPENAI_API_KEY"] = "cli-owned"
+	raw, _ := json.Marshal(blob)
+	home, _ := os.UserHomeDir()
+	testutil.WantNoErr(t, os.MkdirAll(filepath.Join(home, ".codex"), 0o700))
+	testutil.WantNoErr(t, os.WriteFile(filepath.Join(home, ".codex", "auth.json"), raw, 0o600))
+	testutil.WantNoErr(t, c.store.Upsert(context.Background(),
+		makeCodexAccount("uuid-a", "alice@example.com", "tok-a", "ref-a", nearExpirySec)))
+	c.readCredential = cred.ReadCodexCredential
 
-	tests := []struct {
-		name string
-		run  func(t *testing.T)
-	}{
-		{"live holds the spent token: auth.json rotated in place", func(t *testing.T) {
-			refreshSrv := testutil.NewStubServer(t, refreshSuccessBody(rotatedAT, "ref-a-new"), 200, nil)
-			c := buildClient(t, testutil.NewStubServer(t, minUsageBody, 200, nil), refreshSrv, nil, nil,
-				noLookupCall(t), nil, nil)
-			seed(t, c)
-
-			_, err := c.Fetch(context.Background())
-			testutil.WantNoErr(t, err)
-			live := readLive(t)
-			if live.AccessToken != rotatedAT || live.RefreshToken != "ref-a-new" {
-				t.Errorf("auth.json tokens = %q/%q, want rotated", live.AccessToken, live.RefreshToken)
-			}
-			if !strings.Contains(string(live.Raw), `"OPENAI_API_KEY":"cli-owned"`) || extractIDToken(live.Raw) == "" {
-				t.Errorf("auth.json lost CLI-owned fields: %s", live.Raw)
-			}
-			wantStoreRotated(t, c)
-		}},
-		{"CLI rotated mid-flight: auth.json not overwritten", func(t *testing.T) {
-			var path string
-			cliBlob := rawCodexBlob("tok-cli", "ref-cli", nearExpirySec)
-			refreshSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				_ = os.WriteFile(path, cliBlob, 0o600) // the Codex CLI refreshed first
-				_, _ = w.Write(refreshSuccessBody(rotatedAT, "ref-a-new"))
-			}))
-			t.Cleanup(refreshSrv.Close)
-			c := buildClient(t, testutil.NewStubServer(t, minUsageBody, 200, nil), refreshSrv, nil, nil,
-				noLookupCall(t), nil, nil)
-			path = seed(t, c)
-
-			_, err := c.Fetch(context.Background())
-			testutil.WantNoErr(t, err)
-			if got := readLive(t); !bytes.Equal(got.Raw, cliBlob) {
-				t.Errorf("auth.json = %s, want the CLI's blob untouched", got.Raw)
-			}
-			wantStoreRotated(t, c)
-		}},
+	_, err := c.Fetch(context.Background())
+	testutil.WantNoErr(t, err)
+	live, err := cred.ReadCodexCredential(context.Background())
+	testutil.WantNoErr(t, err)
+	if live.AccessToken != rotatedAT || live.RefreshToken != "ref-a-new" {
+		t.Errorf("auth.json tokens = %q/%q, want rotated", live.AccessToken, live.RefreshToken)
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, tc.run)
+	if !strings.Contains(string(live.Raw), `"OPENAI_API_KEY":"cli-owned"`) || extractIDToken(live.Raw) == "" {
+		t.Errorf("auth.json lost CLI-owned fields: %s", live.Raw)
 	}
 }

@@ -365,11 +365,11 @@ func (c *Client) logCacheHit(key string, age time.Duration) {
 	c.debugf("usage cache hit for %s (age %ds)", key, int(age.Seconds()))
 }
 
-// publishRefresh writes a refresh back to the live credential when the live
-// credential still holds the refresh token aistat just spent. Refresh tokens
-// are single-use, so without this Claude Code is left holding a dead one. A
-// changed or missing live credential is newer than ours and is left alone.
-// The live blob itself is rotated so every field the CLI owns survives.
+// publishRefresh writes a refresh back to the live credential if it still
+// holds the refresh token just spent: refresh tokens are single-use, so
+// otherwise Claude Code is left with a dead one. A live credential that changed
+// since is newer than ours, and a missing one is not ours to create; both are
+// left alone.
 func (c *Client) publishRefresh(ctx context.Context, spent string, tok Token) error {
 	live, err := c.readLiveCredential(ctx)
 	if err != nil || live == nil || live.RefreshToken != spent {
@@ -379,8 +379,6 @@ func (c *Client) publishRefresh(ctx context.Context, spent string, tok Token) er
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, credTimeout)
-	defer cancel()
 	return c.writeLive(ctx, blob)
 }
 
@@ -607,18 +605,14 @@ func (c *Client) Fetch(ctx context.Context) (providers.ProviderOutput, error) {
 				accountResults = append(accountResults, ar)
 				continue
 			}
-			// The spent refresh token is dead server-side now, so finish persisting
-			// the rotated pair even if the run is being cancelled.
-			persistCtx := context.WithoutCancel(poolCtx)
-			if err := c.publishRefresh(persistCtx, spent, tok); err != nil {
+			if err := c.publishRefresh(poolCtx, spent, tok); err != nil {
 				c.warnf("aistat: claude: could not save refreshed token to the live credential (%s); run `claude /login` if Claude Code reports an expired session\n", err)
 			}
-			// rotateRawBlob preserves unknown fields via map[string]any round-trip.
+			// Persist rotated tokens. rotateRawBlob preserves unknown fields via
+			// map[string]any round-trip so future Anthropic additions survive rotation.
 			if newBlob, blobErr := rotateRawBlob(acct.RawBlob, tok); blobErr == nil {
 				acct.RawBlob = newBlob
-				upsertCtx, cancel := context.WithTimeout(persistCtx, credTimeout)
-				_ = c.store.Upsert(upsertCtx, acct)
-				cancel()
+				_ = c.store.Upsert(poolCtx, acct)
 			}
 		}
 

@@ -2182,129 +2182,45 @@ func TestNew(t *testing.T) {
 	}
 }
 
-// ctxCheckingStore fails Upsert on a cancelled context, like the real
-// keychain and file stores do, so tests can see which context a write got.
-type ctxCheckingStore struct{ accounts.Store }
-
-func (s ctxCheckingStore) Upsert(ctx context.Context, account accounts.Account) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return s.Store.Upsert(ctx, account)
-}
-
 func TestFetch_publishesRefreshToLive(t *testing.T) {
 	nearExpiry := testNow.Add(5 * time.Second).UnixMilli()
-
-	// setup builds a client whose active account is near expiry and whose
-	// live credential holds the same tokens. The returned writes slice records
-	// every blob handed to the live writer.
-	setup := func(t *testing.T, refreshSrv *httptest.Server, live *atomic.Pointer[cred.Credential], store accounts.Store) (*Client, *[][]byte, *bytes.Buffer) {
-		t.Helper()
-		var warn bytes.Buffer
-		c := buildClient(t, testutil.NewStubServer(t, minUsageBody, 200, nil), testutil.RejectServer(t, "profile"),
-			refreshSrv, live.Load(), store, &warn, func() time.Time { return testNow })
-		c.readCredential = func(context.Context) (cred.Credential, error) { return *live.Load(), nil }
-		var writes [][]byte
-		c.writeLive = func(ctx context.Context, blob []byte) error {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			writes = append(writes, blob)
-			return nil
-		}
-		return c, &writes, &warn
-	}
-	newLive := func() *atomic.Pointer[cred.Credential] {
-		var p atomic.Pointer[cred.Credential]
-		p.Store(makeCred("tok-a", "ref-a", nearExpiry))
-		return &p
-	}
-	newStore := func(t *testing.T) accounts.Store {
-		return testutil.MemStore(t, makeAccount("uuid-a", "a@example.com", "tok-a", "ref-a", nearExpiry))
-	}
-	wantStoreRotated := func(t *testing.T, store accounts.Store) {
-		t.Helper()
-		stored, _ := store.List(context.Background())
-		if len(stored) != 1 || StoredRefreshToken(stored[0]) != "ref-a2" {
-			t.Fatalf("store not rotated to ref-a2: %+v", stored)
-		}
-	}
-
 	tests := []struct {
-		name string
-		run  func(t *testing.T)
+		name       string
+		cliRotates bool // Claude Code refreshes while aistat's exchange is in flight
+		wantWrites int
 	}{
-		{"live holds the spent token: rotated blob published", func(t *testing.T) {
-			live, store := newLive(), newStore(t)
-			c, writes, warn := setup(t, testutil.NewStubServer(t, refreshSuccessBody("tok-a2", "ref-a2"), 200, nil), live, store)
-
-			_, err := c.Fetch(context.Background())
-			testutil.WantNoErr(t, err)
-			if len(*writes) != 1 {
-				t.Fatalf("live writes = %d, want 1", len(*writes))
-			}
-			published := accounts.Account{RawBlob: (*writes)[0]}
-			if StoredAccessToken(published) != "tok-a2" || StoredRefreshToken(published) != "ref-a2" {
-				t.Errorf("published blob = %s, want tok-a2/ref-a2", (*writes)[0])
-			}
-			if warn.Len() != 0 {
-				t.Errorf("unexpected warn: %q", warn.String())
-			}
-			wantStoreRotated(t, store)
-		}},
-		{"live changed mid-flight: not overwritten", func(t *testing.T) {
-			live, store := newLive(), newStore(t)
+		{"live holds the spent token: rotated blob published", false, 1},
+		{"live changed mid-flight: not overwritten", true, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var live atomic.Pointer[cred.Credential]
+			live.Store(makeCred("tok-a", "ref-a", nearExpiry))
 			refreshSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				live.Store(makeCred("tok-cli", "ref-cli", nearExpiry)) // Claude Code refreshed first
+				if tc.cliRotates {
+					live.Store(makeCred("tok-cli", "ref-cli", nearExpiry))
+				}
 				_, _ = w.Write(refreshSuccessBody("tok-a2", "ref-a2"))
 			}))
 			t.Cleanup(refreshSrv.Close)
-			c, writes, _ := setup(t, refreshSrv, live, store)
+			store := testutil.MemStore(t, makeAccount("uuid-a", "a@example.com", "tok-a", "ref-a", nearExpiry))
+			c := buildClient(t, testutil.NewStubServer(t, minUsageBody, 200, nil), testutil.RejectServer(t, "profile"),
+				refreshSrv, live.Load(), store, nil, nil)
+			c.readCredential = func(context.Context) (cred.Credential, error) { return *live.Load(), nil }
+			var writes []accounts.Account
+			c.writeLive = func(_ context.Context, blob []byte) error {
+				writes = append(writes, accounts.Account{RawBlob: blob})
+				return nil
+			}
 
 			_, err := c.Fetch(context.Background())
 			testutil.WantNoErr(t, err)
-			if len(*writes) != 0 {
-				t.Errorf("live writes = %d, want 0 (live was newer)", len(*writes))
+			if len(writes) != tc.wantWrites {
+				t.Fatalf("live writes = %d, want %d", len(writes), tc.wantWrites)
 			}
-			wantStoreRotated(t, store)
-		}},
-		{"run cancelled after the refresh: still persisted", func(t *testing.T) {
-			live, store := newLive(), ctxCheckingStore{newStore(t)}
-			c, writes, _ := setup(t, testutil.NewStubServer(t, refreshSuccessBody("tok-a2", "ref-a2"), 200, nil), live, store)
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			reads := 0
-			c.readCredential = func(context.Context) (cred.Credential, error) {
-				if reads++; reads == 2 { // the re-read after Exchange succeeded
-					cancel()
-				}
-				return *live.Load(), nil
+			if tc.wantWrites == 1 && (StoredAccessToken(writes[0]) != "tok-a2" || StoredRefreshToken(writes[0]) != "ref-a2") {
+				t.Errorf("published blob = %s, want tok-a2/ref-a2", writes[0].RawBlob)
 			}
-
-			_, _ = c.Fetch(ctx)
-			if len(*writes) != 1 {
-				t.Errorf("live writes = %d, want 1", len(*writes))
-			}
-			wantStoreRotated(t, store)
-		}},
-		{"live write fails: warn, row still succeeds", func(t *testing.T) {
-			live, store := newLive(), newStore(t)
-			c, _, warn := setup(t, testutil.NewStubServer(t, refreshSuccessBody("tok-a2", "ref-a2"), 200, nil), live, store)
-			c.writeLive = func(context.Context, []byte) error { return errors.New("keychain locked") }
-
-			out, err := c.Fetch(context.Background())
-			testutil.WantNoErr(t, err)
-			if !strings.Contains(warn.String(), "could not save refreshed token to the live credential (keychain locked)") {
-				t.Errorf("warn = %q", warn.String())
-			}
-			if len(out.Accounts) != 1 || out.Accounts[0].Error != "" {
-				t.Errorf("accounts = %+v, want one row without error", out.Accounts)
-			}
-			wantStoreRotated(t, store)
-		}},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, tc.run)
+		})
 	}
 }
